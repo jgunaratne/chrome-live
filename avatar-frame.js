@@ -295,10 +295,10 @@ const player = new AvatarPlayer(video, {
   onNeedInit: () => port?.postMessage({type: 'need-init'}),
 });
 
-/** Shows the avatar's portrait/video, or the orb in voice-only mode. */
+/** Shows the avatar's portrait/video, or the orb in live and chat modes. */
 async function render() {
   const settings = await loadSettings();
-  const voiceOnly = (sessionMode || settings.mode) === MODES.LIVE;
+  const voiceOnly = (sessionMode || settings.mode) !== MODES.AVATAR;
   orb.hidden = !voiceOnly;
   poster.hidden = voiceOnly;
   video.hidden = voiceOnly;

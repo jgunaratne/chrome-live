@@ -36,6 +36,15 @@
               Gemini API key.</small>
           </span>
         </label>
+        <label class="mode">
+          <input type="radio" name="mode" value="chat">
+          <span>
+            <b>Text chat</b> · AI Studio API key
+            <small>Type instead of talking: replies appear in a chat panel by the bubble. It still sees the
+              page and points at things. The bubble's keyboard button switches between this and your voice
+              mode at any time.</small>
+          </span>
+        </label>
       </div>
     </section>
 
@@ -51,16 +60,19 @@
       </div>
     </section>
 
-    <section id="aistudio" data-mode="live">
+    <section id="aistudio" data-mode="live chat">
       <h2>Gemini API connection</h2>
       <p class="hint">Create a key at <a href="https://aistudio.google.com/apikey" target="_blank"
-        rel="noopener">aistudio.google.com/apikey</a>. It's sent to the Gemini Live API only, and stored
+        rel="noopener">aistudio.google.com/apikey</a>. It's sent to the Gemini API only, and stored
         unencrypted in this Chrome profile's extension storage.</p>
       <label class="block">API key
         <input id="apiKey" class="secret-input" type="password" spellcheck="false" autocomplete="off"
           placeholder="AIza…">
       </label>
-      <div class="row">
+      <div class="row" data-mode="chat">
+        <label>Chat model <input id="chatModel" spellcheck="false"></label>
+      </div>
+      <div class="row" data-mode="live">
         <label>Model <input id="liveModel" spellcheck="false"></label>
         <label>Thinking level
           <select id="thinkingLevel">
@@ -76,7 +88,7 @@
     <section id="google">
       <h2>Google credentials</h2>
       <p class="hint" data-mode="avatar">Used for Vertex AI and, if you set a memory folder, for Google Drive.</p>
-      <p class="hint" data-mode="live">Only needed for Drive memories (below).</p>
+      <p class="hint" data-mode="live chat">Only needed for Drive memories (below).</p>
       <label class="block">Credentials
         <textarea id="credentials" class="secret" rows="4" spellcheck="false" autocomplete="off"
           placeholder="ya29.… or { &quot;type&quot;: &quot;authorized_user&quot;, … }"></textarea>
@@ -139,7 +151,7 @@
     <section id="avatar-section">
       <h2 id="persona-heading">Avatar</h2>
       <div id="avatars" class="avatars" role="radiogroup" aria-label="Avatar" data-mode="avatar"></div>
-      <div class="row">
+      <div class="row" data-mode="avatar live">
         <label>Voice <select id="voice"></select></label>
       </div>
       <label class="block">Persona

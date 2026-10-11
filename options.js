@@ -7,13 +7,14 @@
  */
 
 import {getAccessToken, quotaProjectFor} from './lib/auth.js';
-import {AVATARS, DEFAULT_SETTINGS, MODES, VOICES, loadSettings, resolveAvatar} from './lib/config.js';
+import {checkChatModel} from './lib/chat.js';
+import {AVATARS, DEFAULT_SETTINGS, MODES, VOICES, isVoiceMode, loadSettings, resolveAvatar} from './lib/config.js';
 import {DriveMemory, parseFolderId} from './lib/drive.js';
 import {buildSetupMessage, liveSocketUrl} from './lib/live.js';
 
 const $ = (id) => document.getElementById(id);
 const fields = [
-  'project', 'location', 'model', 'credentials', 'apiKey', 'liveModel',
+  'project', 'location', 'model', 'credentials', 'apiKey', 'liveModel', 'chatModel',
   'thinkingLevel', 'voice', 'persona', 'screenshotSeconds', 'memoryFolder',
 ];
 /** Saved as typed (an empty value is meaningful, not "use the default"). */
@@ -29,9 +30,13 @@ function renderMode() {
     radio.checked = radio.value === settings.mode;
   }
   for (const node of document.querySelectorAll('[data-mode]')) {
-    node.hidden = node.dataset.mode !== settings.mode;
+    node.hidden = !node.dataset.mode.split(' ').includes(settings.mode);
   }
-  $('persona-heading').textContent = settings.mode === MODES.LIVE ? 'Voice and persona' : 'Avatar';
+  $('persona-heading').textContent = {
+    [MODES.AVATAR]: 'Avatar',
+    [MODES.LIVE]: 'Voice and persona',
+    [MODES.CHAT]: 'Persona',
+  }[settings.mode];
 }
 
 function renderAvatars() {
@@ -110,6 +115,9 @@ for (const field of fields) {
 }
 for (const radio of document.querySelectorAll('input[name="mode"]')) {
   radio.addEventListener('change', () => {
+    // Remember the voice mode the bubble's keyboard button switches back to.
+    if (isVoiceMode(settings.mode)) settings.voiceMode = settings.mode;
+    if (isVoiceMode(radio.value)) settings.voiceMode = radio.value;
     settings.mode = radio.value;
     renderMode();
     renderVoiceAndPersona();
@@ -173,6 +181,12 @@ $('test').addEventListener('click', async () => {
   try {
     setStatus(status, 'Connecting…');
     const current = await loadSettings();
+    if (current.mode === MODES.CHAT) {
+      if (!current.apiKey) throw new Error('Paste your Gemini API key first.');
+      const name = await checkChatModel(current.apiKey, current.chatModel);
+      setStatus(status, `Connected: ${name} is ready.`, 'ok');
+      return;
+    }
     let credential;
     if (current.mode === MODES.LIVE) {
       if (!current.apiKey) throw new Error('Paste your Gemini API key first.');
@@ -266,6 +280,16 @@ async function requestMic() {
 }
 
 $('mic-button').addEventListener('click', requestMic);
+
+// The bubble's keyboard button switches modes while this page may be open.
+chrome.storage.onChanged.addListener((changes, area) => {
+  const saved = area === 'local' && changes.settings?.newValue;
+  if (!saved || (saved.mode === settings.mode && saved.voiceMode === settings.voiceMode)) return;
+  settings.mode = saved.mode;
+  settings.voiceMode = saved.voiceMode;
+  renderMode();
+  renderVoiceAndPersona();
+});
 
 fillForm();
 void refreshMicStatus();

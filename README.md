@@ -22,6 +22,11 @@ Mode | What you see | Model | You need
 ---- | ------------ | ----- | --------
 **Gemini Live, extended thinking** | A glowing orb that pulses with the voices | `gemini-3.8-live-extended-thinking` on the Gemini API | A Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey)
 **Live Avatar** | A lip-synced face (11 prebuilt avatars) | `gemini-3.8-live` on Vertex AI | A Google Cloud project with access to the model, and the `gcloud` CLI
+**Text chat** | The orb with a chat panel beside it; you type, replies stream in | `gemini-flash-latest` (configurable) on the Gemini API | A Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey)
+
+Don't want to talk right now? The bubble's keyboard button (bottom right, on
+hover) switches to text chat, and its mic button switches back to your voice
+mode. The conversation carries over both ways.
 
 The extended-thinking model needs a thinking level (Low, Medium, or High; Low
 by default). On High it often says a quick "let me think about that" before
@@ -90,7 +95,9 @@ saving).
         ▲ port 'gla-page'                       │ port 'gla-video'
         │ page text, selection, controls        ▼ voice levels or fMP4 fragments
  content.js (closed shadow DOM)  ─contains─▶ avatar-frame.html/js (iframe)
-   bubble, drag, tap, captions                 orb, or MSE <video>
+   bubble, drag, tap, captions,                orb, or MSE <video>
+   pointer cursor               ─contains─▶ chat-frame.html/js (iframe, text chat;
+                                              port 'gla-chat' to the offscreen doc)
 ```
 
 *   **Gemini Live session** (extended thinking): `responseModalities:
@@ -127,6 +134,16 @@ saving).
     closed shadow root, and follows the target as the page scrolls for 7 s.
     A miss goes back to the model as an error, so it can retry with other
     words.
+*   **Text chat**: `streamGenerateContent` (server-sent events) on the
+    Gemini API, from the offscreen document, so the conversation survives
+    navigations. Each message carries a fresh screenshot (only the latest
+    one is kept in later requests) and any page change or selection since
+    the last message. Function calls (`point_at`, `save_memory`) run in a
+    loop until the model answers in text; model parts go back verbatim,
+    keeping thought signatures. The panel (`chat-frame.html`) is an
+    extension-origin iframe, so typing never triggers the page's keyboard
+    shortcuts, and replies render from a small Markdown subset as DOM nodes,
+    never as HTML.
 *   **Session limits**: the session asks for `sessionResumption`; on `goAway`
     or a dropped connection it resumes on a new connection, keeping the
     conversation.

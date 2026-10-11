@@ -6,17 +6,18 @@
  * a permission prompt itself.
  */
 
-import {getAccessToken} from './lib/auth.js';
+import {getAccessToken, quotaProjectFor} from './lib/auth.js';
 import {AVATARS, DEFAULT_SETTINGS, MODES, VOICES, loadSettings, resolveAvatar} from './lib/config.js';
+import {DriveMemory, parseFolderId} from './lib/drive.js';
 import {buildSetupMessage, liveSocketUrl} from './lib/live.js';
 
 const $ = (id) => document.getElementById(id);
 const fields = [
   'project', 'location', 'model', 'credentials', 'apiKey', 'liveModel',
-  'thinkingLevel', 'voice', 'persona', 'screenshotSeconds',
+  'thinkingLevel', 'voice', 'persona', 'screenshotSeconds', 'memoryFolder',
 ];
 /** Saved as typed (an empty value is meaningful, not "use the default"). */
-const verbatimFields = new Set(['credentials', 'apiKey', 'persona', 'thinkingLevel']);
+const verbatimFields = new Set(['credentials', 'apiKey', 'persona', 'thinkingLevel', 'memoryFolder']);
 
 let settings = await loadSettings();
 
@@ -124,6 +125,41 @@ function setStatus(node, text, kind = '') {
   node.textContent = text;
   node.className = `status ${kind}`;
 }
+
+// ── Memory folder check ──────────────────────────────────────────────────
+
+$('check-folder').addEventListener('click', async () => {
+  const button = $('check-folder');
+  const status = $('folder-status');
+  button.disabled = true;
+  clearTimeout(saveTimer);
+  save();
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  try {
+    setStatus(status, 'Checking…');
+    const current = await loadSettings();
+    const folderId = parseFolderId(current.memoryFolder);
+    if (!folderId) throw new Error('Paste a Google Drive folder link first.');
+    if (!current.credentials) throw new Error('Paste Google credentials with Drive access first.');
+    const store = new DriveMemory({
+      token: await getAccessToken(current.credentials, {forceRefresh: true}),
+      folderId,
+      quotaProject: quotaProjectFor(current.credentials, current.project),
+    });
+    const {folder, files} = await store.load();
+    const count = `${files.length} readable file${files.length === 1 ? '' : 's'}`;
+    setStatus(
+      status,
+      `Found "${folder.name}" with ${count}. ` +
+        (folder.canWrite ? 'Gemini can save memories here.' : "It's read-only, so Gemini can't save memories."),
+      'ok',
+    );
+  } catch (err) {
+    setStatus(status, err.message || String(err), 'error');
+  } finally {
+    button.disabled = false;
+  }
+});
 
 // ── Connection test ──────────────────────────────────────────────────────
 

@@ -42,29 +42,12 @@
     <section id="connection" data-mode="avatar">
       <h2>Vertex AI connection</h2>
       <p class="hint">The extension talks to the Vertex AI Live API directly, as you. It needs a Google
-        Cloud project with the Vertex AI API enabled and access to <code>gemini-3.8-live</code>.</p>
+        Cloud project with the Vertex AI API enabled and access to <code>gemini-3.8-live</code>, and the
+        Google credentials below.</p>
       <div class="row">
         <label>Project <input id="project" spellcheck="false" placeholder="your-gcp-project"></label>
         <label>Location <input id="location" spellcheck="false"></label>
         <label>Model <input id="model" spellcheck="false"></label>
-      </div>
-      <label class="block">Credentials
-        <textarea id="credentials" class="secret" rows="4" spellcheck="false" autocomplete="off"
-          placeholder="ya29.… or { &quot;type&quot;: &quot;authorized_user&quot;, … }"></textarea>
-      </label>
-      <div class="hint">
-        Paste <b>either</b>:
-        <ul>
-          <li>your ADC JSON, refreshed automatically:
-            <code>cat ~/.config/gcloud/application_default_credentials.json</code>
-            (from <code>gcloud auth application-default login</code>), or</li>
-          <li>a short-lived access token (about 1 hour):
-            <code>gcloud auth application-default print-access-token</code>.</li>
-        </ul>
-        Stored unencrypted in this Chrome profile's extension storage.
-      </div>
-      <div class="actions">
-        <label class="check"><input type="checkbox" id="show-credentials"> Show</label>
       </div>
     </section>
 
@@ -87,6 +70,52 @@
             <option value="">None (models without thinking)</option>
           </select>
         </label>
+      </div>
+    </section>
+
+    <section id="google">
+      <h2>Google credentials</h2>
+      <p class="hint" data-mode="avatar">Used for Vertex AI and, if you set a memory folder, for Google Drive.</p>
+      <p class="hint" data-mode="live">Only needed for Drive memories (below).</p>
+      <label class="block">Credentials
+        <textarea id="credentials" class="secret" rows="4" spellcheck="false" autocomplete="off"
+          placeholder="ya29.… or { &quot;type&quot;: &quot;authorized_user&quot;, … }"></textarea>
+      </label>
+      <div class="hint">
+        Paste <b>either</b>:
+        <ul>
+          <li>your ADC JSON, refreshed automatically:
+            <code>cat ~/.config/gcloud/application_default_credentials.json</code>
+            (from <code>gcloud auth application-default login</code>), or</li>
+          <li>a short-lived access token (about 1 hour):
+            <code>gcloud auth application-default print-access-token</code>.</li>
+        </ul>
+        Stored unencrypted in this Chrome profile's extension storage.
+      </div>
+      <div class="actions">
+        <label class="check"><input type="checkbox" id="show-credentials"> Show</label>
+      </div>
+    </section>
+
+    <section id="memory">
+      <h2>Memories (Google Drive)</h2>
+      <p class="hint">Give Gemini a Drive folder as its long-term memory. At the start of each
+        conversation it reads the folder's Google Docs, Sheets, Slides, and text files, and it saves new
+        memories to <code>Gemini memories.md</code> there. Leave empty to turn memories off.</p>
+      <label class="block">Folder link
+        <input id="memoryFolder" spellcheck="false" placeholder="https://drive.google.com/drive/folders/…">
+      </label>
+      <div class="hint">
+        Uses the Google credentials above, which need Drive access. Create them with:
+        <code class="cmd">gcloud auth application-default login --scopes=openid,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/drive</code>
+        and bill the Drive API to a project of yours that has it turned on:
+        <code class="cmd">gcloud auth application-default set-quota-project YOUR_PROJECT</code>
+        <code class="cmd">gcloud services enable drive.googleapis.com --project YOUR_PROJECT</code>
+        Then paste the new ADC JSON above.
+      </div>
+      <div class="actions">
+        <button id="check-folder" type="button">Check folder</button>
+        <span id="folder-status" class="status" role="status"></span>
       </div>
     </section>
 

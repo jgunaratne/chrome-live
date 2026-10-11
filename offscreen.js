@@ -36,6 +36,24 @@ const SILENCE_BASE64 = bytesToBase64(new Uint8Array(3200));
 const GREETING =
   '(The user just opened you on this web page. Greet them in one short, ' +
   'friendly sentence that shows you know what page they are on.)';
+/** Lets the model write to the Drive memory folder (see lib/drive.js). */
+const SAVE_MEMORY_TOOL = {
+  functionDeclarations: [{
+    name: 'save_memory',
+    description:
+      "Saves a long-term memory to the user's Google Drive memory folder, so you remember it in future conversations.",
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        memory: {
+          type: 'STRING',
+          description: 'What to remember, as one short, self-contained sentence (e.g. "The user\'s dog is named Biscuit.").',
+        },
+      },
+      required: ['memory'],
+    },
+  }],
+};
 
 const state = {
   attachedTabId: null,
@@ -58,8 +76,10 @@ const state = {
   resumeHandle: null,
   resumes: 0,
   goAway: false,
-  /** {settings, avatar, accessToken} of the current session. */
+  /** {settings, avatar, credential} of the current session. */
   config: null,
+  /** Drive memories: {enabled, folderName, canWrite, text, error}. */
+  memories: null,
   systemInstruction: '',
   page: null,
   sentPageKey: '',
@@ -295,12 +315,31 @@ async function startSession({resume = false} = {}) {
   if (!state.wantLive || state.ws) return;
 
   if (!resume) {
-    state.systemInstruction = buildSystemInstruction(config, state.page, state.history);
+    state.memories = await loadMemories();
+    if (!state.wantLive || state.ws) return;
+    state.systemInstruction = buildSystemInstruction(config, state.page, state.history, state.memories);
     state.sentPageKey = pageKey(state.page);
     state.lastSelection = state.page?.selection || '';
   }
   postVideo({type: 'mode', mode: config.settings.mode});
   openSocket(config, resume);
+}
+
+/** @return {!Promise<!Object>} The Drive memories (see state.memories). */
+async function loadMemories() {
+  const memories = await askBackground({type: 'load-memories'}).catch(
+    (err) => ({enabled: true, error: String(err?.message || err)}),
+  );
+  if (memories?.error) {
+    postPage({type: 'caption', role: 'system', text: `Drive memories are off for now: ${memories.error}`, final: true});
+  }
+  return memories || {enabled: false};
+}
+
+/** @return {!Array<!Object>} Live API tools for this session. */
+function sessionTools() {
+  const memories = state.memories;
+  return memories?.enabled && !memories.error && memories.canWrite ? [SAVE_MEMORY_TOOL] : [];
 }
 
 function openSocket(config, resume) {
@@ -318,6 +357,7 @@ function openSocket(config, resume) {
       avatar: config.avatar,
       systemInstruction: state.systemInstruction,
       resumeHandle: resume ? state.resumeHandle : null,
+      tools: sessionTools(),
     })));
   };
   ws.onmessage = (event) => {
@@ -332,6 +372,35 @@ function send(message) {
   if (state.ws?.readyState === WebSocket.OPEN) state.ws.send(JSON.stringify(message));
 }
 
+/** Runs the model's function calls (save_memory) and answers them. */
+async function onToolCall({functionCalls = []}) {
+  const ws = state.ws;
+  const functionResponses = [];
+  for (const call of functionCalls) {
+    let response;
+    if (call.name === 'save_memory') {
+      const memory = String(call.args?.memory || '').trim();
+      const result = await askBackground({type: 'save-memory', memory}).catch(
+        (err) => ({error: String(err?.message || err)}),
+      );
+      response = result?.ok
+        ? {result: "Saved to the user's Google Drive memory folder."}
+        : {error: result?.error || 'Saving failed.'};
+      postPage({
+        type: 'caption',
+        role: result?.ok ? 'note' : 'system',
+        text: result?.ok ? `Remembered: ${memory}` : `Couldn't save that memory: ${result?.error}`,
+        final: true,
+      });
+    } else {
+      response = {error: `Unknown function: ${call.name}`};
+    }
+    functionResponses.push({id: call.id, name: call.name, response});
+  }
+  // A reconnect meanwhile means a new session that never made these calls.
+  if (state.ws === ws) send({toolResponse: {functionResponses}});
+}
+
 function onServerMessage(data, streamId, resumed) {
   let message;
   try {
@@ -340,6 +409,7 @@ function onServerMessage(data, streamId, resumed) {
     return;
   }
   if (message.setupComplete) onSetupComplete(resumed);
+  if (message.toolCall) void onToolCall(message.toolCall);
   const update = message.sessionResumptionUpdate;
   if (update?.resumable && update.newHandle) state.resumeHandle = update.newHandle;
   if (message.goAway) {
@@ -604,7 +674,7 @@ function describePage(page) {
   return lines.join('\n');
 }
 
-function buildSystemInstruction({settings, avatar}, page, history) {
+function buildSystemInstruction({settings, avatar}, page, history, memories) {
   const name = avatar.name;
   const bubble = settings.mode === MODES.LIVE
     ? 'a small, round, glowing orb that pulses with your voice'
@@ -626,10 +696,24 @@ function buildSystemInstruction({settings, avatar}, page, history) {
     '- Keep replies short and conversational, one to three sentences, unless the user asks for more.',
     `- Do not start your replies with your own name (e.g. "${name}:"). Just start talking.`,
     '- Never repeat yourself; keep the conversation moving.',
-    '',
-    '## CURRENT PAGE',
-    describePage(page),
   ];
+  if (memories?.enabled && !memories.error) {
+    lines.push(
+      '',
+      '## LONG-TERM MEMORY',
+      `- You have a long-term memory: the user's Google Drive folder "${memories.folderName}". What it holds is below, under YOUR MEMORIES.`,
+      memories.canWrite
+        ? "- When the user tells you something worth remembering across conversations (facts about them, their preferences or plans, or anything they ask you to remember), call save_memory with one short, self-contained sentence, then confirm in a few words. Don't save page content unless asked."
+        : "- The folder is read-only for you, so you can't save new memories; say so if asked.",
+      "- Use your memories naturally when they're relevant; don't recite them unprompted.",
+      '',
+      '## YOUR MEMORIES',
+      '"""',
+      memories.text || '(No memories yet.)',
+      '"""',
+    );
+  }
+  lines.push('', '## CURRENT PAGE', describePage(page));
   if (history.length) {
     lines.push(
       '',

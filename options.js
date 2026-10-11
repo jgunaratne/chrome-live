@@ -1,5 +1,5 @@
 /**
- * @fileoverview Options page: connection, microphone permission, avatar.
+ * @fileoverview Options page: mode, connection, microphone permission, avatar.
  *
  * Settings save automatically. The microphone is granted here, in an
  * extension page, because the offscreen document that streams it cannot show
@@ -7,15 +7,31 @@
  */
 
 import {getAccessToken} from './lib/auth.js';
-import {AVATARS, DEFAULT_SETTINGS, VOICES, loadSettings, resolveAvatar} from './lib/config.js';
+import {AVATARS, DEFAULT_SETTINGS, MODES, VOICES, loadSettings, resolveAvatar} from './lib/config.js';
 import {buildSetupMessage, liveSocketUrl} from './lib/live.js';
 
 const $ = (id) => document.getElementById(id);
-const fields = ['project', 'location', 'model', 'credentials', 'voice', 'persona', 'screenshotSeconds'];
+const fields = [
+  'project', 'location', 'model', 'credentials', 'apiKey', 'liveModel',
+  'thinkingLevel', 'voice', 'persona', 'screenshotSeconds',
+];
+/** Saved as typed (an empty value is meaningful, not "use the default"). */
+const verbatimFields = new Set(['credentials', 'apiKey', 'persona', 'thinkingLevel']);
 
 let settings = await loadSettings();
 
 // ── Settings form ────────────────────────────────────────────────────────
+
+/** Shows the sections of the selected mode. */
+function renderMode() {
+  for (const radio of document.querySelectorAll('input[name="mode"]')) {
+    radio.checked = radio.value === settings.mode;
+  }
+  for (const node of document.querySelectorAll('[data-mode]')) {
+    node.hidden = node.dataset.mode !== settings.mode;
+  }
+  $('persona-heading').textContent = settings.mode === MODES.LIVE ? 'Voice and persona' : 'Avatar';
+}
 
 function renderAvatars() {
   const grid = $('avatars');
@@ -62,9 +78,10 @@ function renderVoiceAndPersona() {
 }
 
 function fillForm() {
-  for (const field of ['project', 'location', 'model', 'credentials', 'persona', 'screenshotSeconds']) {
-    $(field).value = settings[field] ?? '';
+  for (const field of fields) {
+    if (field !== 'voice') $(field).value = settings[field] ?? '';
   }
+  renderMode();
   renderAvatars();
   renderVoiceAndPersona();
 }
@@ -77,7 +94,7 @@ function save() {
       const value = $(field).value;
       settings[field] = field === 'screenshotSeconds'
         ? Math.max(0, Math.min(60, Number(value) || 0))
-        : field === 'credentials' || field === 'persona'
+        : verbatimFields.has(field)
           ? value.trim()
           : value.trim() || DEFAULT_SETTINGS[field];
     }
@@ -89,6 +106,15 @@ function save() {
 for (const field of fields) {
   $(field).addEventListener('input', save);
   $(field).addEventListener('change', save);
+}
+for (const radio of document.querySelectorAll('input[name="mode"]')) {
+  radio.addEventListener('change', () => {
+    settings.mode = radio.value;
+    renderMode();
+    renderVoiceAndPersona();
+    setStatus($('test-status'), '');
+    save();
+  });
 }
 $('show-credentials').addEventListener('change', (event) => {
   $('credentials').classList.toggle('revealed', event.target.checked);
@@ -111,10 +137,16 @@ $('test').addEventListener('click', async () => {
   try {
     setStatus(status, 'Connecting…');
     const current = await loadSettings();
-    if (!current.project) throw new Error('Set your Google Cloud project first.');
-    const accessToken = await getAccessToken(current.credentials, {forceRefresh: true});
+    let credential;
+    if (current.mode === MODES.LIVE) {
+      if (!current.apiKey) throw new Error('Paste your Gemini API key first.');
+      credential = current.apiKey;
+    } else {
+      if (!current.project) throw new Error('Set your Google Cloud project first.');
+      credential = await getAccessToken(current.credentials, {forceRefresh: true});
+    }
     const avatar = resolveAvatar(current);
-    const result = await probeSession(current, avatar, accessToken);
+    const result = await probeSession(current, avatar, credential);
     setStatus(status, result, 'ok');
   } catch (err) {
     setStatus(status, err.message || String(err), 'error');
@@ -123,10 +155,13 @@ $('test').addEventListener('click', async () => {
   }
 });
 
-/** Opens a Live Avatar session and closes it once set up. */
-function probeSession(current, avatar, accessToken) {
+/** Opens a Live session with the current settings and closes it once set up. */
+function probeSession(current, avatar, credential) {
+  const ready = current.mode === MODES.LIVE
+    ? `Connected: ${current.liveModel} is ready.`
+    : `Connected: ${current.model} in ${current.project} is ready with ${avatar.name}.`;
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(liveSocketUrl(current, accessToken));
+    const ws = new WebSocket(liveSocketUrl(current, credential));
     ws.binaryType = 'arraybuffer';
     let done = false;
     const finish = (error, message) => {
@@ -147,15 +182,16 @@ function probeSession(current, avatar, accessToken) {
     };
     ws.onmessage = (event) => {
       const text = typeof event.data === 'string' ? event.data : new TextDecoder().decode(event.data);
-      if (text.includes('"setupComplete"')) {
-        finish(null, `Connected: ${current.model} in ${current.project} is ready with ${avatar.name}.`);
-      }
+      if (text.includes('"setupComplete"')) finish(null, ready);
     };
     ws.onclose = (event) => {
+      const hint = current.mode === MODES.LIVE
+        ? 'Check the API key and model.'
+        : 'Check the credentials, project, and location.';
       finish(
         event.reason
           ? `The Live API closed the session: ${event.reason}`
-          : `Could not connect (code ${event.code}). Check the credentials, project, and location.`,
+          : `Could not connect (code ${event.code}). ${hint}`,
       );
     };
   });

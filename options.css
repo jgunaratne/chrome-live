@@ -108,3 +108,23 @@ button:disabled { opacity: 0.6; cursor: default; }
 .avatar span { display: block; padding: 4px 0 2px; font-size: 13px; font-weight: 500; }
 .avatar[aria-checked="true"] { border-color: var(--accent); }
 footer { padding-bottom: 32px; min-height: 20px; }
+.modes { display: grid; gap: 10px; margin-top: 8px; }
+.mode {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 400;
+  cursor: pointer;
+}
+.mode:has(input:checked) { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.mode input { width: auto; margin-top: 3px; }
+.mode small { display: block; margin-top: 2px; color: var(--muted); font-size: 13px; }
+.secret-input { font: 12px/1.4 "Roboto Mono", ui-monospace, monospace; }
+[hidden] { display: none !important; }
+a { color: var(--accent); }

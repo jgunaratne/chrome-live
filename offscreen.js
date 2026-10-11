@@ -1,13 +1,15 @@
 /**
- * @fileoverview Offscreen document: owns the Gemini Live Avatar session.
+ * @fileoverview Offscreen document: owns the Gemini Live session.
  *
  * It holds the Live API WebSocket and the microphone, so the conversation
  * survives page navigations while the in-page bubble is re-created on each
  * one. Two ports connect from the attached tab:
  *   - 'gla-page'  (content.js): page context and controls in; state,
  *     captions, and mic level out.
- *   - 'gla-video' (avatar-frame.js): the avatar's fragmented MP4 out (the
- *     init segment first for a frame that joins mid-stream).
+ *   - 'gla-video' (avatar-frame.js): in avatar mode, the avatar's fragmented
+ *     MP4 (the init segment first for a frame that joins mid-stream); in live
+ *     (voice-only) mode, voice levels for the orb. Live mode's speech is
+ *     played here (PcmPlayer), so it's never blocked by page autoplay rules.
  *
  * Page awareness: the page's text goes into the system instruction; later
  * navigations and text selections are added as `clientContent` turns with
@@ -16,8 +18,10 @@
  */
 
 import {base64ToBytes, bytesToBase64, concatBytes} from './lib/bytes.js';
+import {MODES} from './lib/config.js';
 import {Fmp4BoxAligner} from './lib/fmp4.js';
 import {buildSetupMessage, liveSocketUrl} from './lib/live.js';
+import {PcmPlayer} from './lib/pcm-player.js';
 
 /** The bubble gone this long (e.g. on an unsupported page) ends the session. */
 const NO_PAGE_TIMEOUT_MS = 60000;
@@ -74,6 +78,17 @@ const state = {
 const aligner = new Fmp4BoxAligner();
 const textDecoder = new TextDecoder();
 const mic = {stream: null, context: null, node: null};
+/** Plays live (voice-only) mode's speech; its activity is the speaking state. */
+const player = new PcmPlayer({
+  onActive: (active) => {
+    if (isLiveMode()) setSpeaking(active);
+  },
+});
+
+/** @return {boolean} Whether the session is voice-only Gemini Live. */
+function isLiveMode() {
+  return state.config?.settings?.mode === MODES.LIVE;
+}
 
 // ── Wiring ───────────────────────────────────────────────────────────────
 
@@ -141,6 +156,7 @@ function connectVideo(port) {
   port.onDisconnect.addListener(() => {
     if (state.videoPort === port) state.videoPort = null;
   });
+  if (state.config) port.postMessage({type: 'mode', mode: state.config.settings.mode});
   port.postMessage({type: 'speaking', value: state.speaking});
   sendInit(port);
 }
@@ -283,11 +299,12 @@ async function startSession({resume = false} = {}) {
     state.sentPageKey = pageKey(state.page);
     state.lastSelection = state.page?.selection || '';
   }
+  postVideo({type: 'mode', mode: config.settings.mode});
   openSocket(config, resume);
 }
 
 function openSocket(config, resume) {
-  const ws = new WebSocket(liveSocketUrl(config.settings, config.accessToken));
+  const ws = new WebSocket(liveSocketUrl(config.settings, config.credential));
   ws.binaryType = 'arraybuffer';
   state.ws = ws;
   state.streamId += 1;
@@ -334,28 +351,40 @@ function onServerMessage(data, streamId, resumed) {
 
   const content = message.serverContent;
   if (!content) return;
+  const live = isLiveMode();
   for (const part of content.modelTurn?.parts || []) {
     const inline = part.inlineData;
-    if (inline?.data && String(inline.mimeType || '').startsWith('video/')) {
+    if (!inline?.data) continue;
+    const mimeType = String(inline.mimeType || '');
+    if (mimeType.startsWith('video/')) {
       onVideo(inline.data, streamId);
+    } else if (mimeType.startsWith('audio/pcm')) {
+      // Voice-only mode: e.g. "audio/pcm;rate=24000".
+      const rate = Number(/rate=(\d+)/.exec(mimeType)?.[1]) || 24000;
+      player.push(base64ToBytes(inline.data), rate);
     }
   }
   if (content.inputTranscription?.text) {
     appendCaption('user', content.inputTranscription.text);
   }
   if (content.outputTranscription?.text) {
-    setSpeaking(true);
+    // In voice mode the player's activity drives the speaking state.
+    if (!live) setSpeaking(true);
     appendCaption('model', content.outputTranscription.text);
   }
   if (content.interrupted) {
-    // Barge-in: skip the speech still buffered in the frame.
-    postVideo({type: 'interrupted'});
+    // Barge-in: drop the speech still buffered (frame video or local audio).
+    if (live) {
+      player.flush();
+    } else {
+      postVideo({type: 'interrupted'});
+    }
     finishCaption('model', true);
   }
   if (content.turnComplete || content.interrupted) {
     finishCaption('user');
     finishCaption('model');
-    setSpeaking(false);
+    if (!live) setSpeaking(false);
     if (state.goAway) reconnect();
   }
 }
@@ -400,10 +429,12 @@ function onSocketClosed(event) {
     return;
   }
   if (!wasLive && event.code === 1006) {
-    // A refused handshake (bad or expired token, no model access) shows up
-    // in the browser only as an abnormal closure.
+    // A refused handshake (bad key or token, no model access) shows up in
+    // the browser only as an abnormal closure.
     fail(
-      'Could not connect to the Live API. Check the credentials, project, and location in Options.',
+      isLiveMode()
+        ? 'Could not connect to the Gemini Live API. Check the API key and model in Options.'
+        : 'Could not connect to the Live API. Check the credentials, project, and location in Options.',
       'credentials',
     );
     return;
@@ -422,6 +453,7 @@ function endSession() {
   state.autoStartPending = false;
   closeSocket();
   stopMic();
+  player.close();
   aligner.reset();
   state.resumeHandle = null;
   state.resumes = 0;
@@ -487,6 +519,10 @@ function onMicFrame({frame, rms}) {
   // Only listen while the bubble is on screen and the mic isn't muted.
   const streaming = state.phase === 'live' && !state.micMuted && Boolean(state.pagePort);
   if (state.phase === 'live') postPage({type: 'level', rms: streaming ? rms : 0});
+  // Voice-only mode: the orb in the frame follows both voices.
+  if (isLiveMode() && state.videoPort) {
+    postVideo({type: 'level', user: streaming ? rms : 0, model: player.level()});
+  }
   if (!streaming) return;
   send({
     realtimeInput: {
@@ -570,15 +606,18 @@ function describePage(page) {
 
 function buildSystemInstruction({settings, avatar}, page, history) {
   const name = avatar.name;
+  const bubble = settings.mode === MODES.LIVE
+    ? 'a small, round, glowing orb that pulses with your voice'
+    : 'a small, round, animated video bubble of your face';
   const lines = [
     String(settings.persona || '').trim() || avatar.persona,
     '',
     '## WHERE YOU ARE',
-    `You appear as ${name}: a small, round, animated video bubble floating over the web page the user is viewing in Chrome. The user can drag you anywhere on the page and talks with you by voice.`,
+    `You appear as ${name}: ${bubble}, floating over the web page the user is viewing in Chrome. The user can drag you anywhere on the page and talks with you by voice.`,
     '',
     '## WHAT YOU KNOW ABOUT THE PAGE',
     '- The text of the page the user is viewing is below. Messages starting with "[Browser update" tell you when the user moves to another page or highlights text. They are not spoken by the user: never reply to them on their own; use them when the user talks to you.',
-    '- You also receive screenshots of the visible part of the page, so you can see what the user sees, including images and layout. The round bubble with your own face in them is you; ignore it.',
+    '- You also receive screenshots of the visible part of the page, so you can see what the user sees, including images and layout. The round bubble in them is you; ignore it.',
     '- When the user asks about the page, ground your answer in it. If something is not on the page, say so instead of guessing.',
     '- You cannot click, scroll, type, or open pages for the user; you can only look and talk.',
     '',

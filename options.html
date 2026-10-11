@@ -11,14 +11,36 @@
     <img src="icons/icon48.png" alt="">
     <div>
       <h1>Gemini Live Avatar</h1>
-      <p>A draggable Gemini 3.8 Live Avatar that sees the page you're on and talks with you.
+      <p>A draggable Gemini Live companion that sees the page you're on and talks with you.
         Click the toolbar button on any tab to bring it up; click it again (or ✕) to send it away.</p>
     </div>
   </header>
 
   <main>
-    <section id="connection">
-      <h2>Connection</h2>
+    <section id="mode-section">
+      <h2>Mode</h2>
+      <div class="modes" role="radiogroup" aria-label="Mode">
+        <label class="mode">
+          <input type="radio" name="mode" value="avatar">
+          <span>
+            <b>Live Avatar</b> · Vertex AI
+            <small>An animated face that talks with you (<code>gemini-3.8-live</code>). Needs a Google Cloud
+              project and OAuth credentials.</small>
+          </span>
+        </label>
+        <label class="mode">
+          <input type="radio" name="mode" value="live">
+          <span>
+            <b>Gemini Live, extended thinking</b> · AI Studio API key
+            <small>Voice only, shown as an orb (<code>gemini-3.8-live-extended-thinking</code>). Needs just a
+              Gemini API key.</small>
+          </span>
+        </label>
+      </div>
+    </section>
+
+    <section id="connection" data-mode="avatar">
+      <h2>Vertex AI connection</h2>
       <p class="hint">The extension talks to the Vertex AI Live API directly, as you. It needs a Google
         Cloud project with the Vertex AI API enabled and access to <code>gemini-3.8-live</code>.</p>
       <div class="row">
@@ -43,6 +65,33 @@
       </div>
       <div class="actions">
         <label class="check"><input type="checkbox" id="show-credentials"> Show</label>
+      </div>
+    </section>
+
+    <section id="aistudio" data-mode="live">
+      <h2>Gemini API connection</h2>
+      <p class="hint">Create a key at <a href="https://aistudio.google.com/apikey" target="_blank"
+        rel="noopener">aistudio.google.com/apikey</a>. It's sent to the Gemini Live API only, and stored
+        unencrypted in this Chrome profile's extension storage.</p>
+      <label class="block">API key
+        <input id="apiKey" class="secret-input" type="password" spellcheck="false" autocomplete="off"
+          placeholder="AIza…">
+      </label>
+      <div class="row">
+        <label>Model <input id="liveModel" spellcheck="false"></label>
+        <label>Thinking level
+          <select id="thinkingLevel">
+            <option value="LOW">Low: fastest replies</option>
+            <option value="MEDIUM">Medium</option>
+            <option value="HIGH">High: deeper answers, with a quick filler first</option>
+            <option value="">None (models without thinking)</option>
+          </select>
+        </label>
+      </div>
+    </section>
+
+    <section id="test-section">
+      <div class="actions">
         <button id="test" type="button">Test connection</button>
         <span id="test-status" class="status" role="status"></span>
       </div>
@@ -59,15 +108,15 @@
     </section>
 
     <section id="avatar-section">
-      <h2>Avatar</h2>
-      <div id="avatars" class="avatars" role="radiogroup" aria-label="Avatar"></div>
+      <h2 id="persona-heading">Avatar</h2>
+      <div id="avatars" class="avatars" role="radiogroup" aria-label="Avatar" data-mode="avatar"></div>
       <div class="row">
         <label>Voice <select id="voice"></select></label>
       </div>
       <label class="block">Persona
         <textarea id="persona" rows="4" placeholder=""></textarea>
       </label>
-      <p class="hint">Leave empty for the avatar's default persona. Page-awareness and speaking rules are
+      <p class="hint">Leave empty for the default persona. Page-awareness and speaking rules are
         added automatically.</p>
     </section>
 

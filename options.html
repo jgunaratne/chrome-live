@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gemini Live Avatar settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <header>
+    <img src="icons/icon48.png" alt="">
+    <div>
+      <h1>Gemini Live Avatar</h1>
+      <p>A draggable Gemini 3.8 Live Avatar that sees the page you're on and talks with you.
+        Click the toolbar button on any tab to bring it up; click it again (or ✕) to send it away.</p>
+    </div>
+  </header>
+
+  <main>
+    <section id="connection">
+      <h2>Connection</h2>
+      <p class="hint">The extension talks to the Vertex AI Live API directly, as you. It needs a Google
+        Cloud project with the Vertex AI API enabled and access to <code>gemini-3.8-live</code>.</p>
+      <div class="row">
+        <label>Project <input id="project" spellcheck="false" placeholder="your-gcp-project"></label>
+        <label>Location <input id="location" spellcheck="false"></label>
+        <label>Model <input id="model" spellcheck="false"></label>
+      </div>
+      <label class="block">Credentials
+        <textarea id="credentials" class="secret" rows="4" spellcheck="false" autocomplete="off"
+          placeholder="ya29.… or { &quot;type&quot;: &quot;authorized_user&quot;, … }"></textarea>
+      </label>
+      <div class="hint">
+        Paste <b>either</b>:
+        <ul>
+          <li>your ADC JSON, refreshed automatically:
+            <code>cat ~/.config/gcloud/application_default_credentials.json</code>
+            (from <code>gcloud auth application-default login</code>), or</li>
+          <li>a short-lived access token (about 1 hour):
+            <code>gcloud auth application-default print-access-token</code>.</li>
+        </ul>
+        Stored unencrypted in this Chrome profile's extension storage.
+      </div>
+      <div class="actions">
+        <label class="check"><input type="checkbox" id="show-credentials"> Show</label>
+        <button id="test" type="button">Test connection</button>
+        <span id="test-status" class="status" role="status"></span>
+      </div>
+    </section>
+
+    <section id="mic">
+      <h2>Microphone</h2>
+      <p class="hint">The avatar listens through your microphone. Chrome asks once for the extension;
+        choose <b>Allow while visiting the site</b>.</p>
+      <div class="actions">
+        <button id="mic-button" type="button">Allow microphone</button>
+        <span id="mic-status" class="status" role="status"></span>
+      </div>
+    </section>
+
+    <section id="avatar-section">
+      <h2>Avatar</h2>
+      <div id="avatars" class="avatars" role="radiogroup" aria-label="Avatar"></div>
+      <div class="row">
+        <label>Voice <select id="voice"></select></label>
+      </div>
+      <label class="block">Persona
+        <textarea id="persona" rows="4" placeholder=""></textarea>
+      </label>
+      <p class="hint">Leave empty for the avatar's default persona. Page-awareness and speaking rules are
+        added automatically.</p>
+    </section>
+
+    <section id="awareness">
+      <h2>Page awareness</h2>
+      <p class="hint">The avatar always gets the page's title, URL, text, and your text selection. It can
+        also see screenshots of the visible part of the tab, taken when the page changes.</p>
+      <div class="row">
+        <label>Screenshot at most every
+          <span class="inline"><input id="screenshotSeconds" type="number" min="0" max="60" step="1"> seconds</span>
+        </label>
+      </div>
+      <p class="hint">0 turns screenshots off.</p>
+    </section>
+  </main>
+
+  <footer><span id="save-status" class="status" role="status"></span></footer>
+  <script type="module" src="options.js"></script>
+</body>
+</html>

@@ -13,7 +13,7 @@
 
 import {getAccessToken} from './lib/auth.js';
 import {bytesToBase64} from './lib/bytes.js';
-import {loadSettings, resolveAvatar} from './lib/config.js';
+import {MODES, loadSettings, resolveAvatar} from './lib/config.js';
 
 const OFFSCREEN_URL = 'offscreen.html';
 /** Screenshots are downscaled to at most this width before upload. */
@@ -180,17 +180,22 @@ async function handleRequest(message, sender) {
 }
 
 async function getSessionConfig() {
-  const {credentials, ...settings} = await loadSettings();
+  const {credentials, apiKey, ...settings} = await loadSettings();
+  const avatar = resolveAvatar(settings);
+  if (settings.mode === MODES.LIVE) {
+    if (!apiKey.trim()) {
+      return {error: 'Paste your Gemini API key (from Google AI Studio) in the extension options.', code: 'credentials'};
+    }
+    return {settings, avatar, credential: apiKey.trim()};
+  }
   if (!settings.project) {
     return {error: 'Set your Google Cloud project in the extension options.', code: 'credentials'};
   }
-  let accessToken;
   try {
-    accessToken = await getAccessToken(credentials);
+    return {settings, avatar, credential: await getAccessToken(credentials)};
   } catch (err) {
     return {error: err.message, code: 'credentials'};
   }
-  return {settings, avatar: resolveAvatar(settings), accessToken};
 }
 
 /**

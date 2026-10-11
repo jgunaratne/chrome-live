@@ -31,12 +31,52 @@
     }
     video { opacity: 0; transition: opacity 0.3s; }
     video.live { opacity: 1; }
+    [hidden] { display: none !important; }
+
+    /* Voice-only mode: an orb that follows the user's and Gemini's voices. */
+    .orb {
+      --user: 0;
+      --model: 0;
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at 50% 45%, #1f2442, #0b0d18 75%);
+    }
+    .pulse {
+      position: absolute;
+      inset: 0;
+      transform: scale(calc(0.8 + var(--model) * 0.45 + var(--user) * 0.15));
+      transition: transform 0.12s ease-out;
+    }
+    .swirl {
+      position: absolute;
+      inset: 16%;
+      border-radius: 50%;
+      background: conic-gradient(#4285f4, #9b72cb, #d96570, #f9ab00, #34a853, #4285f4);
+      filter: blur(12px);
+      opacity: 0.9;
+      animation: orb-spin 9s linear infinite;
+    }
+    body.speaking .swirl { animation-duration: 2.5s; }
+    .glow {
+      position: absolute;
+      inset: 28%;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0) 70%);
+      opacity: calc(0.3 + var(--model) * 1.2 + var(--user) * 0.8);
+      transition: opacity 0.12s ease-out;
+    }
+    @keyframes orb-spin { to { transform: rotate(1turn); } }
+    @media (prefers-reduced-motion: reduce) { .swirl { animation: none; } }
   </style>
 </head>
 <body>
   <div class="stage">
     <img id="poster" alt="">
     <video id="video" playsinline></video>
+    <div id="orb" class="orb" hidden>
+      <div class="pulse"><div class="swirl"></div></div>
+      <div class="glow"></div>
+    </div>
   </div>
   <script type="module" src="avatar-frame.js"></script>
 </body>

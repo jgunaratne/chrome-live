@@ -14,7 +14,7 @@
  */
 
 import {base64ToBytes} from './lib/bytes.js';
-import {loadSettings, resolveAvatar} from './lib/config.js';
+import {MODES, loadSettings, resolveAvatar} from './lib/config.js';
 
 /** SourceBuffer types to try, best first. */
 const MIME_TYPES = [
@@ -284,7 +284,10 @@ class AvatarPlayer {
 
 const video = /** @type {!HTMLVideoElement} */ (document.getElementById('video'));
 const poster = /** @type {!HTMLImageElement} */ (document.getElementById('poster'));
+const orb = /** @type {!HTMLElement} */ (document.getElementById('orb'));
 let port = null;
+/** The running session's mode; null when idle (the saved setting applies). */
+let sessionMode = null;
 
 const player = new AvatarPlayer(video, {
   onLive: (live) => video.classList.toggle('live', live),
@@ -292,28 +295,51 @@ const player = new AvatarPlayer(video, {
   onNeedInit: () => port?.postMessage({type: 'need-init'}),
 });
 
-async function showPoster() {
-  poster.src = resolveAvatar(await loadSettings()).poster;
+/** Shows the avatar's portrait/video, or the orb in voice-only mode. */
+async function render() {
+  const settings = await loadSettings();
+  const voiceOnly = (sessionMode || settings.mode) === MODES.LIVE;
+  orb.hidden = !voiceOnly;
+  poster.hidden = voiceOnly;
+  video.hidden = voiceOnly;
+  if (!voiceOnly) poster.src = resolveAvatar({...settings, mode: MODES.AVATAR}).poster;
 }
-void showPoster();
+void render();
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes.settings) void showPoster();
+  if (area === 'local' && changes.settings) void render();
 });
+
+function setLevels(user, model) {
+  const scale = (rms) => Math.min(1, Math.max(0, Number(rms) * 4 || 0)).toFixed(3);
+  orb.style.setProperty('--user', scale(user));
+  orb.style.setProperty('--model', scale(model));
+}
 
 port = chrome.runtime.connect({name: 'gla-video'});
 port.onMessage.addListener((message) => {
   switch (message?.type) {
+    case 'mode':
+      sessionMode = message.mode;
+      void render();
+      break;
     case 'media':
       player.push(message);
       break;
+    case 'level':
+      setLevels(message.user, message.model);
+      break;
     case 'end':
       player.end();
+      setLevels(0, 0);
+      sessionMode = null;
+      void render();
       break;
     case 'interrupted':
       player.flushToLive();
       break;
     case 'speaking':
       player.setSpeaking(message.value);
+      document.body.classList.toggle('speaking', Boolean(message.value));
       break;
     case 'gesture':
       player.unlockSound();

@@ -118,12 +118,16 @@
         <input id="memoryFolder" spellcheck="false" placeholder="https://drive.google.com/drive/folders/…">
       </label>
       <div class="hint">
-        Uses the Google credentials above, which need Drive access. Create them with:
-        <code class="cmd">gcloud auth application-default login --scopes=openid,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/drive</code>
-        and bill the Drive API to a project of yours that has it turned on:
+        Uses the Google credentials above, which need Drive access.
+        <code>gcloud auth application-default login</code> can't grant that anymore (Google says
+        <i>This app is blocked</i>), but gcloud's own sign-in can, and writes it to your ADC file:
+        <code class="cmd">gcloud auth login --update-adc --enable-gdrive-access</code>
+        Bill the Drive API to a project of yours that has it turned on, then paste the ADC JSON above:
         <code class="cmd">gcloud auth application-default set-quota-project YOUR_PROJECT</code>
         <code class="cmd">gcloud services enable drive.googleapis.com --project YOUR_PROJECT</code>
-        Then paste the new ADC JSON above.
+        <code class="cmd">cat ~/.config/gcloud/application_default_credentials.json</code>
+        If Google blocks that too, sign in with an OAuth client of your own (type <i>Desktop app</i>):
+        <code class="cmd">gcloud auth application-default login --client-id-file=client_secret.json --scopes=openid,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/drive</code>
       </div>
       <div class="actions">
         <button id="check-folder" type="button">Check folder</button>

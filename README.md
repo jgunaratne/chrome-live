@@ -68,19 +68,31 @@ Give Gemini a Drive folder as its long-term memory:
     saves.
 
 Setup: paste the folder link under **Memories** in Options. Memories use the
-**Google credentials** field (in both modes), which needs Drive access:
+**Google credentials** field (in both modes), which needs Drive access.
+`gcloud auth application-default login` can't grant Drive access anymore
+(Google says *This app is blocked*: its sign-in is limited to Cloud scopes),
+but gcloud's own sign-in can, and `--update-adc` writes it to your ADC file:
 
 ```sh
-gcloud auth application-default login --scopes=openid,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/drive
+gcloud auth login --update-adc --enable-gdrive-access
 gcloud auth application-default set-quota-project YOUR_PROJECT
 gcloud services enable drive.googleapis.com --project YOUR_PROJECT
 cat ~/.config/gcloud/application_default_credentials.json   # paste into Options
 ```
 
 The quota project pays for the Drive API calls (they're free, but the API
-must be on). Use **Check folder** to confirm Gemini can read the folder and
-save to it. The folder can be yours or shared with you (with edit access, for
-saving).
+must be on). The new ADC file keeps the Cloud scope, so it also works for Live
+Avatar and your other tools. If Google blocks that sign-in too, use an
+[OAuth client](https://support.google.com/cloud/answer/6158849) of your own
+(type *Desktop app*):
+
+```sh
+gcloud auth application-default login --client-id-file=client_secret.json \
+  --scopes=openid,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/drive
+```
+
+Use **Check folder** to confirm Gemini can read the folder and save to it. The
+folder can be yours or shared with you (with edit access, for saving).
 
 ## How it works
 

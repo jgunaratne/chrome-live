@@ -1,15 +1,18 @@
 /**
  * @fileoverview Offscreen document: owns the Gemini Live session.
  *
- * It holds the Live API WebSocket and the microphone, so the conversation
- * survives page navigations while the in-page bubble is re-created on each
- * one. Two ports connect from the attached tab:
+ * It holds the Live API WebSocket and the microphone (or, in text chat mode,
+ * the chat history), so the conversation survives page navigations while the
+ * in-page bubble is re-created on each one. Ports connect from the attached
+ * tab:
  *   - 'gla-page'  (content.js): page context and controls in; state,
  *     captions, and mic level out.
  *   - 'gla-video' (avatar-frame.js): in avatar mode, the avatar's fragmented
  *     MP4 (the init segment first for a frame that joins mid-stream); in live
  *     (voice-only) mode, voice levels for the orb. Live mode's speech is
  *     played here (PcmPlayer), so it's never blocked by page autoplay rules.
+ *   - 'gla-chat' (chat-frame.js): text chat mode's panel; typed messages in,
+ *     the conversation and streamed replies out.
  *
  * Page awareness: the page's text goes into the system instruction; later
  * navigations and text selections are added as `clientContent` turns with
@@ -20,6 +23,7 @@
 import {base64ToBytes, bytesToBase64, concatBytes} from './lib/bytes.js';
 import {MODES} from './lib/config.js';
 import {Fmp4BoxAligner} from './lib/fmp4.js';
+import {ChatError, streamChat} from './lib/chat.js';
 import {buildSetupMessage, liveSocketUrl} from './lib/live.js';
 import {PcmPlayer} from './lib/pcm-player.js';
 
@@ -31,6 +35,10 @@ const KEEPALIVE_MS = 5000;
 const MAX_RESUMES = 3;
 /** Recent transcript lines carried into a restarted session. */
 const MAX_HISTORY = 24;
+/** Messages the chat panel keeps. */
+const MAX_CHAT_LOG = 200;
+/** Model turns (function call rounds) per typed message, at most. */
+const MAX_CHAT_ROUNDS = 6;
 /** 100 ms of 16 kHz PCM16 silence. */
 const SILENCE_BASE64 = bytesToBase64(new Uint8Array(3200));
 const GREETING =
@@ -128,6 +136,14 @@ const state = {
   /** point_at requests awaiting the bubble's reply, by id. */
   pointRequests: new Map(),
   nextPointId: 0,
+  chatPort: null,
+  /** Text chat: the API history of this chat session. */
+  chatContents: [],
+  /** What the chat panel shows: [{id, role, text}], role user|model|note|error. */
+  chatLog: [],
+  nextChatId: 0,
+  /** Aborts the reply being streamed. */
+  chatAbort: null,
 };
 
 const aligner = new Fmp4BoxAligner();
@@ -143,6 +159,11 @@ const player = new PcmPlayer({
 /** @return {boolean} Whether the session is voice-only Gemini Live. */
 function isLiveMode() {
   return state.config?.settings?.mode === MODES.LIVE;
+}
+
+/** @return {boolean} Whether the session is typed text chat. */
+function isChatMode() {
+  return state.config?.settings?.mode === MODES.CHAT;
 }
 
 // ── Wiring ───────────────────────────────────────────────────────────────
@@ -174,6 +195,7 @@ chrome.runtime.onConnect.addListener((port) => {
   }
   if (port.name === 'gla-page') connectPage(port);
   if (port.name === 'gla-video') connectVideo(port);
+  if (port.name === 'gla-chat') connectChat(port);
 });
 
 function connectPage(port) {
@@ -216,6 +238,22 @@ function connectVideo(port) {
   sendInit(port);
 }
 
+function connectChat(port) {
+  disconnect(state.chatPort);
+  state.chatPort = port;
+  port.onMessage.addListener((message) => {
+    if (port !== state.chatPort) return;
+    if (message?.type === 'send') void sendChat(String(message.text || ''));
+    if (message?.type === 'stop') state.chatAbort?.abort();
+    if (message?.type === 'hide') postPage({type: 'chat-hide'});
+  });
+  port.onDisconnect.addListener(() => {
+    if (state.chatPort === port) state.chatPort = null;
+  });
+  port.postMessage({type: 'log', messages: state.chatLog});
+  postChatState();
+}
+
 /**
  * Lets a frame join the stream midway: it starts from the init segment, and
  * media resumes at the next keyframe (at most 0.5 s away).
@@ -249,6 +287,9 @@ function onPageMessage(message) {
     case 'start':
       state.openOptionsOnFail = true;
       void startSession();
+      break;
+    case 'switch-mode':
+      void switchMode();
       break;
     case 'mic':
       setMicMuted(Boolean(message.muted));
@@ -289,9 +330,30 @@ function postVideo(message) {
   }
 }
 
+function postChat(message) {
+  try {
+    state.chatPort?.postMessage(message);
+  } catch {
+    // The page is navigating away.
+  }
+}
+
+function postChatState() {
+  postChat({
+    type: 'state',
+    ready: state.phase === 'live' && isChatMode(),
+    busy: Boolean(state.chatAbort),
+    phase: state.phase,
+    error: state.error,
+  });
+}
+
 function postState() {
+  postChatState();
   postPage({
     type: 'state',
+    mode: state.config?.settings?.mode || '',
+    busy: Boolean(state.chatAbort),
     phase: state.phase,
     error: state.error,
     errorCode: state.errorCode,
@@ -339,6 +401,10 @@ async function startSession({resume = false} = {}) {
   }
   state.config = config;
   state.avatarName = config.avatar.name;
+  if (isChatMode()) {
+    await startChat(config);
+    return;
+  }
 
   try {
     await startMic();
@@ -372,10 +438,155 @@ async function loadMemories() {
   const memories = await askBackground({type: 'load-memories'}).catch(
     (err) => ({enabled: true, error: String(err?.message || err)}),
   );
-  if (memories?.error) {
-    postPage({type: 'caption', role: 'system', text: `Drive memories are off for now: ${memories.error}`, final: true});
-  }
+  if (memories?.error) showNote('system', `Drive memories are off for now: ${memories.error}`);
   return memories || {enabled: false};
+}
+
+// ── Text chat ────────────────────────────────────────────────────────────
+
+/** Text chat mode has no socket or mic: it's ready once memories load. */
+async function startChat(config) {
+  state.memories = await loadMemories();
+  if (!state.wantLive || state.config !== config) return;
+  state.systemInstruction = buildSystemInstruction(config, state.page, state.history, state.memories);
+  state.sentPageKey = pageKey(state.page);
+  state.lastSelection = state.page?.selection || '';
+  state.chatContents = [];
+  postVideo({type: 'mode', mode: config.settings.mode});
+  setPhase('live');
+}
+
+/** Sends a typed message and streams the reply, running any function calls. */
+async function sendChat(input) {
+  const text = input.trim();
+  if (!text || state.chatAbort || state.phase !== 'live' || !isChatMode()) return;
+  const config = state.config;
+  const abort = new AbortController();
+  state.chatAbort = abort;
+  addChatEntry('user', text);
+  addHistory('user', text);
+  setSpeaking(true); // Spins the bubble's ring and the orb while it replies.
+
+  const reply = {id: ++state.nextChatId, role: 'model', text: ''};
+  try {
+    const parts = pageNotes().map((note) => ({text: note}));
+    const screenshot = await captureForChat();
+    if (screenshot) parts.push({inlineData: {mimeType: 'image/jpeg', data: screenshot}});
+    parts.push({text});
+    state.chatContents.push({role: 'user', parts});
+
+    for (let round = 0; round < MAX_CHAT_ROUNDS; round++) {
+      let newRound = Boolean(reply.text);
+      const {parts: modelParts} = await streamChat({
+        apiKey: config.credential,
+        model: config.settings.chatModel,
+        systemInstruction: state.systemInstruction,
+        contents: withoutOldScreenshots(state.chatContents),
+        tools: sessionTools(),
+        signal: abort.signal,
+        onText: (chunk) => {
+          if (newRound && !/\s$/.test(reply.text)) reply.text += '\n\n';
+          newRound = false;
+          reply.text += chunk;
+          postChat({type: 'entry', ...reply, partial: true});
+        },
+      });
+      state.chatContents.push({role: 'model', parts: modelParts.length ? modelParts : [{text: ''}]});
+      const calls = modelParts.filter((part) => part.functionCall).map((part) => part.functionCall);
+      if (!calls.length) break;
+      const responses = [];
+      for (const call of calls) {
+        const response = await runFunction(call.name, call.args || {});
+        responses.push({functionResponse: {...(call.id ? {id: call.id} : {}), name: call.name, response}});
+      }
+      if (abort.signal.aborted) throw new DOMException('Stopped', 'AbortError');
+      state.chatContents.push({role: 'user', parts: responses});
+    }
+    finishReply(reply);
+  } catch (err) {
+    if (state.config !== config) return; // The session ended or switched modes.
+    if (err?.name === 'AbortError') {
+      finishReply(reply, '…');
+    } else {
+      finishReply(reply);
+      addChatEntry('error', err instanceof ChatError ? err.message : `Something went wrong: ${err?.message || err}`);
+    }
+    // Keep the history alternating: answer the unanswered user turn.
+    if (state.chatContents.at(-1)?.role === 'user') {
+      state.chatContents.push({role: 'model', parts: [{text: reply.text || '(No reply.)'}]});
+    }
+  } finally {
+    if (state.chatAbort === abort) {
+      state.chatAbort = null;
+      setSpeaking(false);
+    }
+    postState();
+  }
+}
+
+function finishReply(reply, suffix = '') {
+  const text = reply.text.trim();
+  if (!text) {
+    postChat({type: 'drop', id: reply.id}); // e.g. it only pointed.
+    return;
+  }
+  addChatEntry('model', text + suffix, reply.id);
+  addHistory('model', text);
+}
+
+/** Page changes since the last message, as notes for the next one. */
+function pageNotes() {
+  const page = state.page;
+  if (!page) return [];
+  const key = pageKey(page);
+  if (key !== state.sentPageKey) {
+    state.sentPageKey = key;
+    state.lastSelection = page.selection || '';
+    return ['[Browser update, not typed by the user] The user is now looking at this page:\n' + describePage(page)];
+  }
+  if (page.selection && page.selection !== state.lastSelection) {
+    state.lastSelection = page.selection;
+    return [
+      '[Browser update, not typed by the user] The user highlighted this text on the page:\n' +
+        `"""\n${page.selection}\n"""`,
+    ];
+  }
+  return [];
+}
+
+/** @return {!Promise<?string>} A screenshot for a message, if they're on. */
+async function captureForChat() {
+  if (!(Number(state.config?.settings?.screenshotSeconds) > 0) || !state.pagePort) return null;
+  const response = await askBackground({type: 'capture-tab', tabId: state.attachedTabId}).catch(() => null);
+  return response?.data || null;
+}
+
+/** Keeps only the latest screenshot in the request, to save tokens. */
+function withoutOldScreenshots(contents) {
+  const hasImage = (content) => content.parts.some((part) => part.inlineData);
+  const last = contents.findLastIndex(hasImage);
+  return contents.map((content, i) => i === last || !hasImage(content)
+    ? content
+    : {...content, parts: content.parts.filter((part) => !part.inlineData)});
+}
+
+function addChatEntry(role, text, id = ++state.nextChatId) {
+  if (!text) return;
+  const entry = {id, role, text};
+  state.chatLog.push(entry);
+  if (state.chatLog.length > MAX_CHAT_LOG) state.chatLog.shift();
+  postChat({type: 'entry', ...entry, partial: false});
+}
+
+/** The bubble's keyboard button: between text chat and the voice mode. */
+async function switchMode() {
+  const result = await askBackground({type: 'switch-mode'}).catch(() => null);
+  if (!result?.mode) return;
+  endSession();
+  state.config = null;
+  state.openOptionsOnFail = true;
+  setPhase('idle');
+  void startSession();
 }
 
 /** @return {!Array<!Object>} Live API tools for this session. */
@@ -416,35 +627,41 @@ function send(message) {
   if (state.ws?.readyState === WebSocket.OPEN) state.ws.send(JSON.stringify(message));
 }
 
-/** Runs the model's function calls (save_memory) and answers them. */
+/** Runs the model's function calls (save_memory, point_at) and answers them. */
 async function onToolCall({functionCalls = []}) {
   const ws = state.ws;
   const functionResponses = [];
   for (const call of functionCalls) {
-    let response;
-    if (call.name === 'save_memory') {
-      const memory = String(call.args?.memory || '').trim();
-      const result = await askBackground({type: 'save-memory', memory}).catch(
-        (err) => ({error: String(err?.message || err)}),
-      );
-      response = result?.ok
-        ? {result: "Saved to the user's Google Drive memory folder."}
-        : {error: result?.error || 'Saving failed.'};
-      postPage({
-        type: 'caption',
-        role: result?.ok ? 'note' : 'system',
-        text: result?.ok ? `Remembered: ${memory}` : `Couldn't save that memory: ${result?.error}`,
-        final: true,
-      });
-    } else if (call.name === 'point_at') {
-      response = await pointAt(call.args || {});
-    } else {
-      response = {error: `Unknown function: ${call.name}`};
-    }
+    const response = await runFunction(call.name, call.args || {});
     functionResponses.push({id: call.id, name: call.name, response});
   }
   // A reconnect meanwhile means a new session that never made these calls.
   if (state.ws === ws) send({toolResponse: {functionResponses}});
+}
+
+/** @return {!Promise<!Object>} The function response for the model. */
+async function runFunction(name, args) {
+  if (name === 'point_at') return pointAt(args);
+  if (name !== 'save_memory') return {error: `Unknown function: ${name}`};
+  const memory = String(args.memory || '').trim();
+  const result = await askBackground({type: 'save-memory', memory}).catch(
+    (err) => ({error: String(err?.message || err)}),
+  );
+  if (result?.ok) {
+    showNote('note', `Remembered: ${memory}`);
+    return {result: "Saved to the user's Google Drive memory folder."};
+  }
+  showNote('system', `Couldn't save that memory: ${result?.error}`);
+  return {error: result?.error || 'Saving failed.'};
+}
+
+/** A note from the app (not the model): in the chat panel, or a caption. */
+function showNote(role, text) {
+  if (isChatMode()) {
+    addChatEntry(role === 'note' ? 'note' : 'error', text);
+  } else {
+    postPage({type: 'caption', role, text, final: true});
+  }
 }
 
 /**
@@ -590,6 +807,9 @@ function closeSocket() {
 function endSession() {
   state.wantLive = false;
   state.autoStartPending = false;
+  state.chatAbort?.abort();
+  state.chatAbort = null;
+  state.chatContents = [];
   closeSocket();
   stopMic();
   player.close();
@@ -702,7 +922,8 @@ function onPageContext(context) {
   if (!context) return;
   state.page = context;
   state.screenDirty = true;
-  if (state.phase !== 'live') return;
+  // Text chat sends page changes with the next message (see sendChat).
+  if (state.phase !== 'live' || isChatMode()) return;
   const key = pageKey(context);
   if (key === state.sentPageKey) return;
   state.sentPageKey = key;
@@ -716,7 +937,7 @@ function onPageContext(context) {
 function onSelection(text) {
   const selection = text.trim().slice(0, 2000);
   if (state.page) state.page.selection = selection;
-  if (state.phase !== 'live' || !selection || selection === state.lastSelection) return;
+  if (state.phase !== 'live' || isChatMode() || !selection || selection === state.lastSelection) return;
   state.lastSelection = selection;
   sendContext(
     '[Browser update, not spoken by the user] The user highlighted this text on the page:\n' +
@@ -749,27 +970,41 @@ function describePage(page) {
 
 function buildSystemInstruction({settings, avatar}, page, history, memories) {
   const name = avatar.name;
-  const bubble = settings.mode === MODES.LIVE
-    ? 'a small, round, glowing orb that pulses with your voice'
-    : 'a small, round, animated video bubble of your face';
+  const chat = settings.mode === MODES.CHAT;
+  const bubble = {
+    [MODES.AVATAR]: 'a small, round, animated video bubble of your face',
+    [MODES.LIVE]: 'a small, round, glowing orb that pulses with your voice',
+    [MODES.CHAT]: 'a small, round, glowing orb with a chat panel beside it',
+  }[settings.mode];
   const lines = [
     String(settings.persona || '').trim() || avatar.persona,
     '',
     '## WHERE YOU ARE',
-    `You appear as ${name}: ${bubble}, floating over the web page the user is viewing in Chrome. The user can drag you anywhere on the page and talks with you by voice.`,
+    `You appear as ${name}: ${bubble}, floating over the web page the user is viewing in Chrome. The user can drag you anywhere on the page and ${chat ? 'chats with you by typing' : 'talks with you by voice'}.`,
     '',
     '## WHAT YOU KNOW ABOUT THE PAGE',
-    '- The text of the page the user is viewing is below. Messages starting with "[Browser update" tell you when the user moves to another page or highlights text. They are not spoken by the user: never reply to them on their own; use them when the user talks to you.',
-    '- You also receive screenshots of the visible part of the page, so you can see what the user sees, including images and layout. The round bubble in them is you, and the arrow cursor is your pointer; ignore them.',
+    chat
+      ? '- The text of the page the user is viewing is below. Notes starting with "[Browser update" at the start of a user message tell you when the user moved to another page or highlighted text; they are not typed by the user.'
+      : '- The text of the page the user is viewing is below. Messages starting with "[Browser update" tell you when the user moves to another page or highlights text. They are not spoken by the user: never reply to them on their own; use them when the user talks to you.',
+    chat
+      ? '- Each user message comes with a screenshot of the visible part of the page, so you can see what the user sees, including images and layout. The round bubble and the chat panel in it are you, and the arrow cursor is your pointer; ignore them.'
+      : '- You also receive screenshots of the visible part of the page, so you can see what the user sees, including images and layout. The round bubble in them is you, and the arrow cursor is your pointer; ignore them.',
     '- When the user asks about the page, ground your answer in it. If something is not on the page, say so instead of guessing.',
     '- You cannot click, type, or open pages for the user, but you can point: whenever you talk about a specific thing on the page, call point_at first so a cursor shows the user what you mean. Prefer `text` copied exactly from the page; use x and y from the latest screenshot only for things without text, like images. Don\'t mention the tool or describe the cursor; just point and talk. If pointing fails, try other words from the page, or carry on without it.',
     '',
-    '## HOW YOU TALK',
-    '- RESPOND IN ENGLISH. YOU MUST RESPOND UNMISTAKABLY IN ENGLISH, even if the user\'s speech sounds like another language or the page is in another language. Only switch languages if the user explicitly asks you to.',
-    '- Everything you say is spoken aloud. Use natural spoken words only: no markdown, lists, emojis, stage directions, or reading out long URLs.',
-    '- Keep replies short and conversational, one to three sentences, unless the user asks for more.',
-    `- Do not start your replies with your own name (e.g. "${name}:"). Just start talking.`,
-    '- Never repeat yourself; keep the conversation moving.',
+    ...(chat ? [
+      '## HOW YOU WRITE',
+      '- RESPOND IN ENGLISH unless the user writes to you in another language or asks you to switch.',
+      '- Your replies show in a small chat panel (about 340 px wide). Keep them short and to the point: a few sentences, or a short list when it helps. Simple Markdown works: **bold**, *italics*, `code`, lists, and links.',
+      `- Do not start your replies with your own name (e.g. "${name}:").`,
+    ] : [
+      '## HOW YOU TALK',
+      '- RESPOND IN ENGLISH. YOU MUST RESPOND UNMISTAKABLY IN ENGLISH, even if the user\'s speech sounds like another language or the page is in another language. Only switch languages if the user explicitly asks you to.',
+      '- Everything you say is spoken aloud. Use natural spoken words only: no markdown, lists, emojis, stage directions, or reading out long URLs.',
+      '- Keep replies short and conversational, one to three sentences, unless the user asks for more.',
+      `- Do not start your replies with your own name (e.g. "${name}:"). Just start talking.`,
+      '- Never repeat yourself; keep the conversation moving.',
+    ]),
   ];
   if (memories?.enabled && !memories.error) {
     lines.push(
@@ -791,7 +1026,7 @@ function buildSystemInstruction({settings, avatar}, page, history, memories) {
   if (history.length) {
     lines.push(
       '',
-      '## CONVERSATION SO FAR (before a reconnect)',
+      '## CONVERSATION SO FAR (earlier in this conversation)',
       ...history.map(({role, text}) => `${role === 'user' ? 'User' : name}: ${text}`),
     );
   }
@@ -802,7 +1037,7 @@ function buildSystemInstruction({settings, avatar}, page, history, memories) {
 setInterval(() => {
   const seconds = Number(state.config?.settings?.screenshotSeconds) || 0;
   if (
-    seconds <= 0 || state.phase !== 'live' || !state.pagePort ||
+    seconds <= 0 || state.phase !== 'live' || isChatMode() || !state.pagePort ||
     !state.screenDirty || state.shotInFlight ||
     Date.now() - state.lastShotAt < seconds * 1000
   ) {
@@ -842,6 +1077,12 @@ function finishCaption(role, interrupted = false) {
   state.captions[role] = '';
   if (!text) return;
   postPage({type: 'caption', role, text: interrupted ? `${text}…` : text, final: true});
+  addHistory(role, text);
+  // Voice turns show in the chat panel too, if the user switches to typing.
+  addChatEntry(role, interrupted ? `${text}…` : text);
+}
+
+function addHistory(role, text) {
   state.history.push({role, text});
   if (state.history.length > MAX_HISTORY) state.history.shift();
 }

@@ -34,6 +34,7 @@
   const ICONS = {
     mic: 'M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z',
     micOff: 'M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3 3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z',
+    keyboard: 'M20 5H4c-1.1 0-1.99.9-1.99 2L2 17c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-9 3h2v2h-2V8zm0 3h2v2h-2v-2zM8 8h2v2H8V8zm0 3h2v2H8v-2zm-1 2H5v-2h2v2zm0-3H5V8h2v2zm9 7H8v-2h8v2zm0-4h-2v-2h2v2zm0-3h-2V8h2v2zm3 3h-2v-2h2v2zm0-3h-2V8h2v2z',
     close: 'M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z',
     settings: 'M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z',
   };
@@ -136,6 +137,18 @@
     .btn.mic { left: -8px; bottom: 2px; }
     .btn.settings { left: -8px; top: 2px; }
     .btn.close { right: -8px; top: 2px; }
+    .btn.keyboard { right: -8px; bottom: 2px; }
+    .panel {
+      position: absolute;
+      left: 0;
+      top: 0;
+      display: none;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08), 0 10px 36px rgba(0, 0, 0, 0.32);
+    }
+    .panel.show { display: block; }
+    .panel iframe { display: block; width: 100%; height: 100%; border: 0; }
     .btn.mic[aria-pressed="true"] { background: #d93025; color: #fff; opacity: 1; transform: none; }
     .caption {
       position: absolute;
@@ -218,13 +231,16 @@
   const closeButton = iconButton('close', ICONS.close);
   closeButton.setAttribute('aria-label', 'Close the avatar');
   closeButton.title = 'Close';
+  const keyboardButton = iconButton('keyboard', ICONS.keyboard);
+  // Text chat mode's panel; its frame loads the first time it opens.
+  const panel = element('div', 'panel');
   const caption = element('div', 'caption');
   const captionWho = element('div', 'who');
   const captionText = element('div', 'text');
   captionText.setAttribute('aria-live', 'polite');
   caption.append(captionWho, captionText);
-  root.append(ring, frameBox, hit, badge, micButton, settingsButton, closeButton, caption);
-  shadow.append(root);
+  root.append(ring, frameBox, hit, badge, micButton, settingsButton, closeButton, keyboardButton, caption);
+  shadow.append(root, panel);
   document.documentElement.append(host);
 
   function addStyles(shadowRoot, css) {
@@ -276,7 +292,13 @@
     speaking: false,
     soundBlocked: false,
     avatarName: '',
+    /** The running session's mode; '' when none (savedMode applies). */
+    mode: '',
+    /** Text chat: a reply is on its way. */
+    busy: false,
   };
+  /** The mode in the settings, for when no session is running. */
+  let savedMode = '';
   let port = null;
   let removed = false;
   let reconnectTimer = 0;
@@ -322,6 +344,7 @@
         return;
       }
       iframe.src = FRAME_URL; // Its port reconnects with it.
+      if (chatFrame) chatFrame.src = CHAT_URL;
       connect();
     }, 400);
   }
@@ -353,17 +376,29 @@
       case 'point':
         post({type: 'point-result', id: message.id, ...pointAt(message)});
         break;
+      case 'chat-hide':
+        setChatOpen(false);
+        break;
       case 'remove':
         teardown();
         break;
     }
   }
 
+  function currentMode() {
+    return view.mode || savedMode;
+  }
+
   function render() {
     root.dataset.phase = view.phase;
     root.dataset.speaking = String(view.speaking);
     root.classList.toggle('muted', view.micMuted);
-    micButton.hidden = view.phase !== 'live';
+    const chat = currentMode() === 'chat';
+    micButton.hidden = view.phase !== 'live' || chat;
+    keyboardButton.querySelector('path').setAttribute('d', chat ? ICONS.mic : ICONS.keyboard);
+    keyboardButton.setAttribute('aria-label', chat ? 'Switch to voice' : 'Switch to typing');
+    keyboardButton.title = chat ? 'Talk instead' : 'Type instead';
+    renderPanel();
     micButton.setAttribute('aria-pressed', String(view.micMuted));
     micButton.setAttribute('aria-label', view.micMuted ? 'Unmute microphone' : 'Mute microphone');
     micButton.title = view.micMuted ? 'Unmute' : 'Mute';
@@ -377,7 +412,13 @@
   }
 
   function badgeText() {
-    if (view.phase === 'live' && view.soundBlocked) return 'Tap to hear me';
+    const chat = currentMode() === 'chat';
+    if (view.phase === 'live' && view.soundBlocked && !chat) return 'Tap to hear me';
+    if (chat && view.phase === 'live') {
+      if (view.busy) return 'Thinking…';
+      return chatOpen ? 'Chatting' : 'Tap to chat';
+    }
+    if (chat && view.phase === 'idle') return 'Tap to chat';
     switch (view.phase) {
       case 'connecting':
         return 'Connecting…';
@@ -434,6 +475,7 @@
     host.style.setProperty('left', `${position.left}px`, 'important');
     host.style.setProperty('top', `${position.top}px`, 'important');
     placeCaption();
+    placePanel();
   }
 
   /** Keeps the caption on screen: above the bubble, or below near the top. */
@@ -517,7 +559,10 @@
     if (view.phase === 'idle' || view.phase === 'error') {
       // Always retry: the settings may have been fixed since the last
       // failure. The session opens Options if access still isn't set up.
+      if (currentMode() === 'chat') setChatOpen(true);
       post({type: 'start'});
+    } else if (currentMode() === 'chat' && view.phase === 'live') {
+      setChatOpen(!chatOpen);
     } else {
       root.classList.toggle('show-controls');
     }
@@ -535,12 +580,81 @@
     event.stopPropagation();
     openOptions();
   });
+  keyboardButton.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (currentMode() !== 'chat') setChatOpen(true);
+    post({type: 'switch-mode'});
+  });
   closeButton.addEventListener('click', (event) => {
     event.stopPropagation();
     chrome.runtime.sendMessage({target: 'background', type: 'detach'}).catch(() => {});
     teardown();
   });
   root.addEventListener('pointerdown', (event) => event.stopPropagation());
+
+  // ── Text chat panel ──────────────────────────────────────────────────────
+
+  const CHAT_URL = chrome.runtime.getURL('chat-frame.html');
+  const CHAT_OPEN_KEY = 'chatOpen';
+  const PANEL_WIDTH = 340;
+  const PANEL_HEIGHT = 460;
+  const PANEL_GAP = 14;
+  let chatOpen = true;
+  let chatFrame = null;
+  /** Focus the panel's input once it shows (after a tap or a switch). */
+  let focusChat = false;
+
+  function setChatOpen(open) {
+    chatOpen = open;
+    focusChat = open;
+    chrome.storage.local.set({[CHAT_OPEN_KEY]: open}).catch(() => {});
+    render();
+  }
+
+  function renderPanel() {
+    const show = currentMode() === 'chat' && chatOpen && view.phase !== 'idle';
+    panel.classList.toggle('show', show);
+    if (!show) return;
+    if (!chatFrame) {
+      chatFrame = document.createElement('iframe');
+      chatFrame.title = 'Chat with Gemini';
+      chatFrame.src = CHAT_URL;
+      chatFrame.addEventListener('load', () => {
+        if (focusChat) chatFrame.focus();
+      });
+      panel.append(chatFrame);
+    }
+    placePanel();
+    if (focusChat && view.phase === 'live') {
+      focusChat = false;
+      chatFrame.focus();
+    }
+  }
+
+  /** Beside the bubble (left if there's room, else right), on screen. */
+  function placePanel() {
+    if (!panel.classList.contains('show')) return;
+    const {width, height} = viewport();
+    const panelWidth = Math.min(PANEL_WIDTH, width - 2 * EDGE);
+    const panelHeight = Math.min(PANEL_HEIGHT, height - 2 * EDGE);
+    let left = position.left - PANEL_GAP - panelWidth;
+    if (left < EDGE) left = position.left + SIZE + PANEL_GAP;
+    left = Math.max(EDGE, Math.min(left, width - panelWidth - EDGE));
+    const top = Math.max(EDGE, Math.min(position.top + SIZE - panelHeight, height - panelHeight - EDGE));
+    Object.assign(panel.style, {
+      left: `${Math.round(left - position.left)}px`,
+      top: `${Math.round(top - position.top)}px`,
+      width: `${Math.round(panelWidth)}px`,
+      height: `${Math.round(panelHeight)}px`,
+    });
+  }
+
+  function onStorageChanged(changes, area) {
+    if (area === 'local' && changes.settings) {
+      savedMode = changes.settings.newValue?.mode || '';
+      render();
+    }
+  }
 
   // ── Pointer ──────────────────────────────────────────────────────────────
   // The model's point_at tool: a cursor flies from the bubble to a thing on
@@ -1011,6 +1125,7 @@
     target.addEventListener(type, listener, options);
   }
   chrome.runtime.onMessage.addListener(onRuntimeMessage);
+  chrome.storage.onChanged.addListener(onStorageChanged);
 
   // ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -1038,6 +1153,7 @@
     }
     try {
       chrome.runtime.onMessage.removeListener(onRuntimeMessage);
+      chrome.storage.onChanged.removeListener(onStorageChanged);
     } catch {
       // The extension context is gone.
     }
@@ -1056,10 +1172,14 @@
   const initial = viewport();
   placeAt(initial.width - SIZE - 28, initial.height - SIZE - BADGE_ROOM - 20);
   chrome.storage.local
-    .get(POSITION_KEY)
+    .get([POSITION_KEY, CHAT_OPEN_KEY, 'settings'])
     .then((stored) => {
+      if (removed) return;
+      savedMode = stored.settings?.mode || '';
+      chatOpen = stored[CHAT_OPEN_KEY] !== false;
       const saved = stored[POSITION_KEY];
-      if (saved && !drag && !removed) placeAt(saved.left, saved.top);
+      if (saved && !drag) placeAt(saved.left, saved.top);
+      render();
     })
     .catch(() => {});
   render();

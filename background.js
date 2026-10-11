@@ -14,7 +14,7 @@
 
 import {getAccessToken, quotaProjectFor} from './lib/auth.js';
 import {bytesToBase64} from './lib/bytes.js';
-import {MODES, loadSettings, resolveAvatar} from './lib/config.js';
+import {MODES, isVoiceMode, loadSettings, resolveAvatar} from './lib/config.js';
 import {DriveMemory, parseFolderId} from './lib/drive.js';
 
 const OFFSCREEN_URL = 'offscreen.html';
@@ -176,6 +176,8 @@ async function handleRequest(message, sender) {
       await sendToOffscreen({type: 'attach', tabId: attached, autoStart: false});
       return {attached: true};
     }
+    case 'switch-mode':
+      return switchMode();
     case 'load-memories':
       return loadMemories();
     case 'save-memory':
@@ -233,10 +235,28 @@ function saveMemory(memory) {
   return run;
 }
 
+/**
+ * The bubble's keyboard button: text chat, or back to the last voice mode.
+ * @return {!Promise<{mode: string}>}
+ */
+async function switchMode() {
+  const settings = await loadSettings();
+  const {settings: stored} = await chrome.storage.local.get('settings');
+  // Settings saved before voiceMode existed: guess from what's set up.
+  const voiceMode = isVoiceMode(stored?.voiceMode)
+    ? stored.voiceMode
+    : settings.apiKey.trim() && !settings.project ? MODES.LIVE : MODES.AVATAR;
+  const mode = settings.mode === MODES.CHAT ? voiceMode : MODES.CHAT;
+  await chrome.storage.local.set({
+    settings: {...settings, mode, voiceMode: isVoiceMode(settings.mode) ? settings.mode : voiceMode},
+  });
+  return {mode};
+}
+
 async function getSessionConfig() {
   const {credentials, apiKey, ...settings} = await loadSettings();
   const avatar = resolveAvatar(settings);
-  if (settings.mode === MODES.LIVE) {
+  if (settings.mode === MODES.LIVE || settings.mode === MODES.CHAT) {
     if (!apiKey.trim()) {
       return {error: 'Paste your Gemini API key (from Google AI Studio) in the extension options.', code: 'credentials'};
     }

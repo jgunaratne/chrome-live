@@ -27,7 +27,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["avatar-frame.html"],
+      "resources": ["avatar-frame.html", "chat-frame.html"],
       "matches": ["<all_urls>"]
     }
   ]

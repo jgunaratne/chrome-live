@@ -8,12 +8,14 @@
  *   browses; this worker re-injects the bubble (content.js) after each
  *   navigation of the attached tab.
  * - It also serves the Chrome APIs the offscreen document lacks: settings and
- *   access tokens, and screenshots of the visible tab.
+ *   access tokens, screenshots of the visible tab, and memories in Google
+ *   Drive (lib/drive.js).
  */
 
-import {getAccessToken} from './lib/auth.js';
+import {getAccessToken, quotaProjectFor} from './lib/auth.js';
 import {bytesToBase64} from './lib/bytes.js';
 import {MODES, loadSettings, resolveAvatar} from './lib/config.js';
+import {DriveMemory, parseFolderId} from './lib/drive.js';
 
 const OFFSCREEN_URL = 'offscreen.html';
 /** Screenshots are downscaled to at most this width before upload. */
@@ -174,9 +176,61 @@ async function handleRequest(message, sender) {
       await sendToOffscreen({type: 'attach', tabId: attached, autoStart: false});
       return {attached: true};
     }
+    case 'load-memories':
+      return loadMemories();
+    case 'save-memory':
+      return saveMemory(String(message.memory || ''));
     default:
       return {error: `Unknown request: ${message.type}`};
   }
+}
+
+// ── Memories in Google Drive ─────────────────────────────────────────────
+
+/** @return {!Promise<?DriveMemory>} null when memories are off. */
+async function memoryStore() {
+  const settings = await loadSettings();
+  if (!settings.memoryFolder.trim()) return null;
+  const folderId = parseFolderId(settings.memoryFolder);
+  if (!folderId) throw new Error('The memory folder setting is not a Google Drive folder link.');
+  if (!settings.credentials.trim()) {
+    throw new Error('Drive memories need Google credentials with Drive access in Options.');
+  }
+  return new DriveMemory({
+    token: await getAccessToken(settings.credentials),
+    folderId,
+    quotaProject: quotaProjectFor(settings.credentials, settings.project),
+  });
+}
+
+async function loadMemories() {
+  try {
+    const store = await memoryStore();
+    if (!store) return {enabled: false};
+    const {folder, text, files} = await store.load();
+    return {enabled: true, folderName: folder.name, canWrite: folder.canWrite, text, files};
+  } catch (err) {
+    return {enabled: true, error: err.message};
+  }
+}
+
+/** Saves run one at a time, so concurrent appends can't overwrite each other. */
+let saveQueue = Promise.resolve();
+
+function saveMemory(memory) {
+  const run = saveQueue.then(async () => {
+    if (!memory.trim()) return {error: 'The memory was empty.'};
+    try {
+      const store = await memoryStore();
+      if (!store) return {error: 'Memories are turned off.'};
+      await store.append(memory);
+      return {ok: true};
+    } catch (err) {
+      return {error: err.message};
+    }
+  });
+  saveQueue = run;
+  return run;
 }
 
 async function getSessionConfig() {

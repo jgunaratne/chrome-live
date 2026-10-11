@@ -128,3 +128,4 @@ footer { padding-bottom: 32px; min-height: 20px; }
 .secret-input { font: 12px/1.4 "Roboto Mono", ui-monospace, monospace; }
 [hidden] { display: none !important; }
 a { color: var(--accent); }
+.hint code.cmd { display: block; margin: 4px 0; white-space: pre-wrap; word-break: break-all; }

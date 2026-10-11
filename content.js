@@ -170,6 +170,7 @@
     .caption[data-role="user"] .who, .caption[data-role="user"] .text { color: #5f6368; }
     .caption[data-role="user"] .text { font-style: italic; }
     .caption[data-role="system"] .who { color: #d93025; }
+    .caption[data-role="note"] .who { color: #188038; }
     @keyframes gla-spin { to { transform: rotate(1turn); } }
     @media (prefers-reduced-motion: reduce) { .ring { animation: none !important; } }
   `;
@@ -384,8 +385,8 @@
 
   function showCaption(role, text, final) {
     if (!text) return;
-    captionWho.textContent =
-      role === 'user' ? 'You' : role === 'model' ? view.avatarName || 'Avatar' : 'Gemini Live Avatar';
+    const labels = {user: 'You', model: view.avatarName || 'Avatar', note: 'Memory'};
+    captionWho.textContent = labels[role] || 'Gemini Live Avatar';
     captionText.textContent = text.length > 240 ? `…${text.slice(-240)}` : text;
     caption.dataset.role = role;
     caption.classList.add('show');

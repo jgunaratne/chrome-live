@@ -11,6 +11,8 @@ voice.
     click it on the companion's tab (or ✕) to send it away.
 *   It knows the page: its title, URL, and text; what you highlight; and what
     you see (screenshots of the visible tab when the page changes).
+*   Optionally, it keeps long-term memories in a Google Drive folder you give
+    it: it reads them at the start of each conversation and saves new ones.
 
 ## Modes
 
@@ -43,6 +45,35 @@ the full answer.
 3.  Click **Test connection**, then **Allow microphone** (choose *Allow while
     visiting the site*).
 4.  Pick a voice and optional persona (and, for Live Avatar, an avatar).
+
+## Memories in Google Drive (optional)
+
+Give Gemini a Drive folder as its long-term memory:
+
+*   At the start of each conversation it reads the folder's Google Docs,
+    Sheets, and Slides (as text) and text files (Markdown, plain text, JSON,
+    CSV, YAML): newest first, about 30k characters in total. Drop notes there
+    for Gemini to know.
+*   When you tell it something worth remembering ("remember that my dog is
+    named Biscuit"), it calls a `save_memory` tool that appends a dated line to
+    `Gemini memories.md` in the folder (created on the first save). Edit or
+    delete lines there freely. The bubble shows *Memory: Remembered …* when it
+    saves.
+
+Setup: paste the folder link under **Memories** in Options. Memories use the
+**Google credentials** field (in both modes), which needs Drive access:
+
+```sh
+gcloud auth application-default login --scopes=openid,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/drive
+gcloud auth application-default set-quota-project YOUR_PROJECT
+gcloud services enable drive.googleapis.com --project YOUR_PROJECT
+cat ~/.config/gcloud/application_default_credentials.json   # paste into Options
+```
+
+The quota project pays for the Drive API calls (they're free, but the API
+must be on). Use **Check folder** to confirm Gemini can read the folder and
+save to it. The folder can be yours or shared with you (with edit access, for
+saving).
 
 ## How it works
 

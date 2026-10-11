@@ -182,8 +182,35 @@ async function handleRequest(message, sender) {
       return loadMemories();
     case 'save-memory':
       return saveMemory(String(message.memory || ''));
+    case 'navigate':
+      return navigateTab(message);
     default:
       return {error: `Unknown request: ${message.type}`};
+  }
+}
+
+// ── Browser control ──────────────────────────────────────────────────────
+
+/** The model's navigate tool, on the tab the avatar is on (only). */
+async function navigateTab({tabId, url, go}) {
+  if (typeof tabId !== 'number' || tabId !== (await getAttachedTabId())) {
+    return {error: 'The avatar is not on that tab.'};
+  }
+  try {
+    if (go === 'back') {
+      await chrome.tabs.goBack(tabId);
+    } else if (go === 'forward') {
+      await chrome.tabs.goForward(tabId);
+    } else if (go === 'reload') {
+      await chrome.tabs.reload(tabId);
+    } else {
+      const address = new URL(String(url));
+      if (!/^https?:$/.test(address.protocol)) return {error: 'Only http and https addresses can be opened.'};
+      await chrome.tabs.update(tabId, {url: address.href});
+    }
+    return {ok: true};
+  } catch (err) {
+    return {error: String(err?.message || err)};
   }
 }
 

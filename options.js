@@ -17,6 +17,8 @@ const fields = [
   'project', 'location', 'model', 'credentials', 'apiKey', 'liveModel', 'chatModel',
   'thinkingLevel', 'voice', 'persona', 'screenshotSeconds', 'memoryFolder',
 ];
+/** Checkboxes, saved as booleans. */
+const checkboxFields = ['browserControl'];
 /** Saved as typed (an empty value is meaningful, not "use the default"). */
 const verbatimFields = new Set(['credentials', 'apiKey', 'persona', 'thinkingLevel', 'memoryFolder']);
 
@@ -87,6 +89,7 @@ function fillForm() {
   for (const field of fields) {
     if (field !== 'voice') $(field).value = settings[field] ?? '';
   }
+  for (const field of checkboxFields) $(field).checked = Boolean(settings[field]);
   renderMode();
   renderAvatars();
   renderVoiceAndPersona();
@@ -104,12 +107,13 @@ function save() {
           ? value.trim()
           : value.trim() || DEFAULT_SETTINGS[field];
     }
+    for (const field of checkboxFields) settings[field] = $(field).checked;
     await chrome.storage.local.set({settings});
     setStatus($('save-status'), 'Saved. Changes apply to the next conversation.', 'ok');
   }, 300);
 }
 
-for (const field of fields) {
+for (const field of [...fields, ...checkboxFields]) {
   $(field).addEventListener('input', save);
   $(field).addEventListener('change', save);
 }

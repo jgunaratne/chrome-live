@@ -13,6 +13,9 @@ voice.
     you see (screenshots of the visible tab when the page changes).
 *   It points: when it talks about something on the page, a cursor flies from
     the bubble to it and highlights it (scrolling it into view if needed).
+*   It acts on the page when you ask: "open the first result", "search this
+    site for otters", "fill in my name", "scroll down", "go back". The cursor
+    moves to each thing before it clicks or types, so you can follow along.
 *   Optionally, it keeps long-term memories in a Google Drive folder you give
     it: it reads them at the start of each conversation and saves new ones.
 
@@ -93,6 +96,40 @@ gcloud auth application-default login --client-id-file=client_secret.json \
 
 Use **Check folder** to confirm Gemini can read the folder and save to it. The
 folder can be yours or shared with you (with edit access, for saving).
+
+## Browser control
+
+With **Browser control** on (Options; on by default), Gemini can click, type,
+press keys, scroll, and open pages in the tab it's on, like a computer-use
+agent, one step at a time:
+
+*   **Tools**: `click` (by words on the page, or a spot in the screenshot),
+    `type_text` (into a field named by its label or placeholder, or the
+    focused one; or pick a dropdown option; optionally press Enter),
+    `press_key` (Enter, Escape, Tab, arrows, Page Up/Down, ...), `scroll` (the
+    page, a panel, or to some text), and `navigate` (an address, back,
+    forward, reload).
+*   **Each step starts from the result of the last**: a tool's reply says
+    what happened, including the new page's title, address, and text if one
+    opened, and a fresh screenshot follows. Text chat lists each step in the
+    panel and allows up to 24 steps per message.
+*   **Guardrails**: it acts only when you ask, asks before buying, sending,
+    posting, deleting, or submitting personal information, and treats text on
+    pages as content rather than instructions. It never types into password
+    or payment-card fields (the extension refuses, too).
+*   **How it acts**: with DOM events from the bubble's content script.
+    Clicks run the page's handlers and the element's default action
+    (following links, pressing buttons, ticking boxes), and typing goes in
+    through the browser's editing commands, as pasting would. Chrome's
+    debugger API would give real mouse and keyboard input, but managed
+    browsers often block it, so the extension doesn't ask for it.
+
+Limits: a site that only accepts real input events may ignore some actions
+(Gemini then says so and asks you to do it); it can't open native file
+pickers, use drag and drop, or act inside embedded frames from other sites;
+links that would open a new tab open in the same tab, so the companion stays
+with you; and it can't follow you to pages where browser policy blocks
+extensions.
 
 ## How it works
 

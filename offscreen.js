@@ -36,23 +36,53 @@ const SILENCE_BASE64 = bytesToBase64(new Uint8Array(3200));
 const GREETING =
   '(The user just opened you on this web page. Greet them in one short, ' +
   'friendly sentence that shows you know what page they are on.)';
-/** Lets the model write to the Drive memory folder (see lib/drive.js). */
-const SAVE_MEMORY_TOOL = {
-  functionDeclarations: [{
-    name: 'save_memory',
-    description:
-      "Saves a long-term memory to the user's Google Drive memory folder, so you remember it in future conversations.",
-    parameters: {
-      type: 'OBJECT',
-      properties: {
-        memory: {
-          type: 'STRING',
-          description: 'What to remember, as one short, self-contained sentence (e.g. "The user\'s dog is named Biscuit.").',
-        },
+/** How long to wait for the bubble to place the pointer. */
+const POINT_TIMEOUT_MS = 1500;
+/** Lets the model point a cursor at something on the page (content.js). */
+const POINT_AT_FUNCTION = {
+  name: 'point_at',
+  description:
+    'Points a cursor at something on the web page the user is viewing, so they can see what you mean. ' +
+    'Call it right before you talk about a specific thing on the page (a heading, link, button, image, price, paragraph, ...). ' +
+    'It scrolls the page to the thing if it is out of view.',
+  parameters: {
+    type: 'OBJECT',
+    properties: {
+      text: {
+        type: 'STRING',
+        description:
+          'Preferred. A few distinctive words that appear on the page in or right next to the thing, copied exactly from the page text (or a link or button label, or image alt text).',
       },
-      required: ['memory'],
+      x: {
+        type: 'NUMBER',
+        description: 'Only for things without text (e.g. an image): horizontal position in the latest screenshot, from 0 (left edge) to 1000 (right edge).',
+      },
+      y: {
+        type: 'NUMBER',
+        description: 'Only with x: vertical position in the latest screenshot, from 0 (top edge) to 1000 (bottom edge).',
+      },
+      label: {
+        type: 'STRING',
+        description: 'Optional: a short label shown next to the cursor, one to four words.',
+      },
     },
-  }],
+  },
+};
+/** Lets the model write to the Drive memory folder (see lib/drive.js). */
+const SAVE_MEMORY_FUNCTION = {
+  name: 'save_memory',
+  description:
+    "Saves a long-term memory to the user's Google Drive memory folder, so you remember it in future conversations.",
+  parameters: {
+    type: 'OBJECT',
+    properties: {
+      memory: {
+        type: 'STRING',
+        description: 'What to remember, as one short, self-contained sentence (e.g. "The user\'s dog is named Biscuit.").',
+      },
+    },
+    required: ['memory'],
+  },
 };
 
 const state = {
@@ -71,6 +101,8 @@ const state = {
   avatarName: '',
   /** The user wants a session (drives reconnects). */
   wantLive: false,
+  /** The user tapped to start: open Options if access isn't set up. */
+  openOptionsOnFail: false,
   ws: null,
   streamId: 0,
   resumeHandle: null,
@@ -93,6 +125,9 @@ const state = {
   pagePort: null,
   videoPort: null,
   noPageTimer: 0,
+  /** point_at requests awaiting the bubble's reply, by id. */
+  pointRequests: new Map(),
+  nextPointId: 0,
 };
 
 const aligner = new Fmp4BoxAligner();
@@ -212,6 +247,7 @@ function onPageMessage(message) {
       state.screenDirty = true;
       break;
     case 'start':
+      state.openOptionsOnFail = true;
       void startSession();
       break;
     case 'mic':
@@ -220,6 +256,12 @@ function onPageMessage(message) {
     case 'gesture':
       postVideo({type: 'gesture'});
       break;
+    case 'point-result': {
+      const resolve = state.pointRequests.get(message.id);
+      state.pointRequests.delete(message.id);
+      resolve?.(message);
+      break;
+    }
   }
 }
 
@@ -339,7 +381,9 @@ async function loadMemories() {
 /** @return {!Array<!Object>} Live API tools for this session. */
 function sessionTools() {
   const memories = state.memories;
-  return memories?.enabled && !memories.error && memories.canWrite ? [SAVE_MEMORY_TOOL] : [];
+  const functions = [POINT_AT_FUNCTION];
+  if (memories?.enabled && !memories.error && memories.canWrite) functions.push(SAVE_MEMORY_FUNCTION);
+  return [{functionDeclarations: functions}];
 }
 
 function openSocket(config, resume) {
@@ -392,6 +436,8 @@ async function onToolCall({functionCalls = []}) {
         text: result?.ok ? `Remembered: ${memory}` : `Couldn't save that memory: ${result?.error}`,
         final: true,
       });
+    } else if (call.name === 'point_at') {
+      response = await pointAt(call.args || {});
     } else {
       response = {error: `Unknown function: ${call.name}`};
     }
@@ -399,6 +445,28 @@ async function onToolCall({functionCalls = []}) {
   }
   // A reconnect meanwhile means a new session that never made these calls.
   if (state.ws === ws) send({toolResponse: {functionResponses}});
+}
+
+/**
+ * Asks the bubble to point at something on the page.
+ * @return {!Promise<!Object>} The function response for the model.
+ */
+function pointAt({text, x, y, label}) {
+  if (!state.pagePort) return Promise.resolve({error: 'The page is not on screen right now.'});
+  const id = ++state.nextPointId;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      state.pointRequests.delete(id);
+      resolve({error: 'The page did not respond.'});
+    }, POINT_TIMEOUT_MS);
+    state.pointRequests.set(id, (result) => {
+      clearTimeout(timer);
+      resolve(result?.ok
+        ? {result: result.scrolled ? 'Pointing at it (scrolled it into view).' : 'Pointing at it.'}
+        : {error: result?.error || 'Could not point at that.'});
+    });
+    postPage({type: 'point', id, text, x, y, label});
+  });
 }
 
 function onServerMessage(data, streamId, resumed) {
@@ -463,6 +531,7 @@ function onSetupComplete(resumed) {
   state.resumes = 0;
   state.goAway = false;
   state.screenDirty = true;
+  state.openOptionsOnFail = false;
   setPhase('live');
   if (resumed) return;
   // The page may have changed while connecting.
@@ -541,6 +610,10 @@ function stopSession() {
 
 function fail(message, code = '') {
   console.warn('[GLA]', message);
+  if (code === 'credentials' && state.openOptionsOnFail) {
+    void askBackground({type: 'open-options'}).catch(() => {});
+  }
+  state.openOptionsOnFail = false;
   endSession();
   state.error = message;
   state.errorCode = code;
@@ -687,11 +760,12 @@ function buildSystemInstruction({settings, avatar}, page, history, memories) {
     '',
     '## WHAT YOU KNOW ABOUT THE PAGE',
     '- The text of the page the user is viewing is below. Messages starting with "[Browser update" tell you when the user moves to another page or highlights text. They are not spoken by the user: never reply to them on their own; use them when the user talks to you.',
-    '- You also receive screenshots of the visible part of the page, so you can see what the user sees, including images and layout. The round bubble in them is you; ignore it.',
+    '- You also receive screenshots of the visible part of the page, so you can see what the user sees, including images and layout. The round bubble in them is you, and the arrow cursor is your pointer; ignore them.',
     '- When the user asks about the page, ground your answer in it. If something is not on the page, say so instead of guessing.',
-    '- You cannot click, scroll, type, or open pages for the user; you can only look and talk.',
+    '- You cannot click, type, or open pages for the user, but you can point: whenever you talk about a specific thing on the page, call point_at first so a cursor shows the user what you mean. Prefer `text` copied exactly from the page; use x and y from the latest screenshot only for things without text, like images. Don\'t mention the tool or describe the cursor; just point and talk. If pointing fails, try other words from the page, or carry on without it.',
     '',
     '## HOW YOU TALK',
+    '- RESPOND IN ENGLISH. YOU MUST RESPOND UNMISTAKABLY IN ENGLISH, even if the user\'s speech sounds like another language or the page is in another language. Only switch languages if the user explicitly asks you to.',
     '- Everything you say is spoken aloud. Use natural spoken words only: no markdown, lists, emojis, stage directions, or reading out long URLs.',
     '- Keep replies short and conversational, one to three sentences, unless the user asks for more.',
     `- Do not start your replies with your own name (e.g. "${name}:"). Just start talking.`,

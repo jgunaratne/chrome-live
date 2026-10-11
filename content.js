@@ -195,16 +195,7 @@
     host.style.setProperty(name, value, 'important');
   }
   const shadow = host.attachShadow({mode: 'closed'});
-  try {
-    // Constructed stylesheets aren't subject to the page's CSP.
-    const sheet = new CSSStyleSheet();
-    sheet.replaceSync(CSS);
-    shadow.adoptedStyleSheets = [sheet];
-  } catch {
-    const style = document.createElement('style');
-    style.textContent = CSS;
-    shadow.append(style);
-  }
+  addStyles(shadow, CSS);
 
   const root = element('div', 'gla');
   const ring = element('div', 'ring');
@@ -235,6 +226,27 @@
   root.append(ring, frameBox, hit, badge, micButton, settingsButton, closeButton, caption);
   shadow.append(root);
   document.documentElement.append(host);
+
+  function addStyles(shadowRoot, css) {
+    try {
+      // Constructed stylesheets aren't subject to the page's CSP.
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(css);
+      shadowRoot.adoptedStyleSheets = [sheet];
+    } catch {
+      const style = document.createElement('style');
+      style.textContent = css;
+      shadowRoot.append(style);
+    }
+  }
+
+  /** Built node by node: pages may forbid innerHTML (Trusted Types). */
+  function svgElement(tag, attributes, children = []) {
+    const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [name, value] of Object.entries(attributes)) node.setAttribute(name, value);
+    node.append(...children);
+    return node;
+  }
 
   function element(tag, className) {
     const node = document.createElement(tag);
@@ -337,6 +349,9 @@
         break;
       case 'level':
         setLevel(message.rms);
+        break;
+      case 'point':
+        post({type: 'point-result', id: message.id, ...pointAt(message)});
         break;
       case 'remove':
         teardown();
@@ -499,14 +514,10 @@
     // The tap is a user gesture on the page, which also lets the video play
     // with sound.
     if (view.soundBlocked) post({type: 'gesture'});
-    if (view.phase === 'idle') {
+    if (view.phase === 'idle' || view.phase === 'error') {
+      // Always retry: the settings may have been fixed since the last
+      // failure. The session opens Options if access still isn't set up.
       post({type: 'start'});
-    } else if (view.phase === 'error') {
-      if (view.errorCode === 'credentials') {
-        openOptions();
-      } else {
-        post({type: 'start'});
-      }
     } else {
       root.classList.toggle('show-controls');
     }
@@ -530,6 +541,362 @@
     teardown();
   });
   root.addEventListener('pointerdown', (event) => event.stopPropagation());
+
+  // ── Pointer ──────────────────────────────────────────────────────────────
+  // The model's point_at tool: a cursor flies from the bubble to a thing on
+  // the page, found by its text (or by a spot in the latest screenshot), and
+  // follows it as the page scrolls until it fades out.
+
+  /** How long the pointer stays up. */
+  const POINT_MS = 7000;
+  /** Most text the matcher scans, to keep huge pages fast. */
+  const MAX_SCAN_CHARS = 400000;
+
+  const POINTER_CSS = `
+    .layer { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
+    .highlight {
+      position: absolute;
+      left: 0;
+      top: 0;
+      border-radius: 6px;
+      background: rgba(66, 133, 244, 0.14);
+      box-shadow: 0 0 0 2px rgba(66, 133, 244, 0.9), 0 0 18px rgba(155, 114, 203, 0.55);
+      opacity: 0;
+      transition: opacity 0.25s;
+    }
+    .cursor {
+      position: absolute;
+      left: 0;
+      top: 0;
+      opacity: 0;
+      transition: opacity 0.25s;
+      will-change: transform;
+    }
+    .layer.show .cursor, .layer.show .highlight.on { opacity: 1; }
+    .cursor svg {
+      position: absolute;
+      left: -3px;
+      top: -2px;
+      width: 30px;
+      height: 34px;
+      overflow: visible;
+      filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.35));
+    }
+    .pulse {
+      position: absolute;
+      left: -14px;
+      top: -14px;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: 2px solid rgba(66, 133, 244, 0.9);
+      animation: gla-pulse 1.4s ease-out infinite;
+    }
+    .label {
+      position: absolute;
+      left: 24px;
+      top: 26px;
+      padding: 3px 10px 4px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #4285f4, #9b72cb);
+      color: #fff;
+      font: 500 12.5px/1.4 "Google Sans", Roboto, system-ui, -apple-system, "Segoe UI", sans-serif;
+      white-space: nowrap;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    }
+    .label:empty { display: none; }
+    @keyframes gla-pulse {
+      from { transform: scale(0.5); opacity: 1; }
+      to { transform: scale(1.6); opacity: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) { .pulse { animation: none; } }
+  `;
+
+  const pointerHost = document.createElement('gemini-live-pointer');
+  for (const [name, value] of Object.entries({
+    ...hostStyle,
+    'z-index': '2147483646',
+    width: '100vw',
+    height: '100vh',
+    'pointer-events': 'none',
+  })) {
+    pointerHost.style.setProperty(name, value, 'important');
+  }
+  const pointerShadow = pointerHost.attachShadow({mode: 'closed'});
+  addStyles(pointerShadow, POINTER_CSS);
+  const layer = element('div', 'layer');
+  const highlight = element('div', 'highlight');
+  const cursor = element('div', 'cursor');
+  const pulse = element('div', 'pulse');
+  const cursorLabel = element('div', 'label');
+  const arrow = svgElement('svg', {viewBox: '0 0 30 34'}, [
+    svgElement('defs', {}, [
+      svgElement('linearGradient', {id: 'gla-arrow', x1: '0', y1: '0', x2: '1', y2: '1'}, [
+        svgElement('stop', {offset: '0', 'stop-color': '#4285f4'}),
+        svgElement('stop', {offset: '1', 'stop-color': '#9b72cb'}),
+      ]),
+    ]),
+    svgElement('path', {
+      d: 'M3 2 L3 27 L9.5 20.5 L14 30.5 L18.5 28.5 L14 18.5 L23 18.5 Z',
+      fill: 'url(#gla-arrow)',
+      stroke: '#fff',
+      'stroke-width': '2',
+      'stroke-linejoin': 'round',
+    }),
+  ]);
+  cursor.append(pulse, arrow, cursorLabel);
+  layer.append(highlight, cursor);
+  pointerShadow.append(layer);
+
+  /**
+   * The current target: {target: () => ?{x, y, box}, until, frame, x, y}.
+   * `target` gives the cursor tip and the box to highlight, in viewport px.
+   */
+  let pointing = null;
+  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+
+  /**
+   * @param {{text: (string|undefined), x: (number|undefined), y: (number|undefined), label: (string|undefined)}} request
+   * @return {{ok: boolean, scrolled: (boolean|undefined), error: (string|undefined)}}
+   */
+  function pointAt({text, x, y, label}) {
+    let target = null;
+    let scrollTo = null;
+    const query = String(text || '').trim();
+    if (query) {
+      const found = findOnPage(query);
+      if (found) ({target, scrollTo} = found);
+    }
+    if (!target && Number.isFinite(Number(x)) && Number.isFinite(Number(y))) {
+      target = targetAtScreenshotPoint(Number(x), Number(y));
+    }
+    if (!target) {
+      return {
+        ok: false,
+        error: query
+          ? `"${query}" isn't on the page. Use words copied exactly from the page, or x and y from the screenshot.`
+          : 'Give the text to point at, or x and y from the screenshot.',
+      };
+    }
+    let scrolled = false;
+    if (scrollTo && isOffscreen(target())) {
+      scrollTo.scrollIntoView({block: 'center', inline: 'nearest', behavior: reducedMotion.matches ? 'auto' : 'smooth'});
+      scrolled = true;
+    }
+    showPointer(target, String(label || '').trim().slice(0, 40));
+    return {ok: true, scrolled};
+  }
+
+  function showPointer(target, label) {
+    const start = pointing
+      ? {x: pointing.x, y: pointing.y}
+      : {x: position.left + SIZE / 2, y: position.top + SIZE / 2};
+    cancelAnimationFrame(pointing?.frame);
+    pointing = {target, until: Date.now() + POINT_MS, frame: 0, ...start};
+    cursorLabel.textContent = label;
+    if (!pointerHost.isConnected) document.documentElement.append(pointerHost);
+    // Let the starting position render before fading in.
+    moveCursor(start.x, start.y);
+    requestAnimationFrame(() => layer.classList.add('show'));
+    pointing.frame = requestAnimationFrame(followTarget);
+  }
+
+  function followTarget() {
+    if (!pointing) return;
+    const spot = pointing.target();
+    if (!spot || Date.now() > pointing.until) {
+      hidePointer();
+      return;
+    }
+    // Glide toward the target; snap when motion is reduced.
+    const ease = reducedMotion.matches ? 1 : 0.18;
+    pointing.x += (spot.x - pointing.x) * ease;
+    pointing.y += (spot.y - pointing.y) * ease;
+    moveCursor(pointing.x, pointing.y);
+    if (spot.box) {
+      const pad = 4;
+      Object.assign(highlight.style, {
+        transform: `translate(${spot.box.left - pad}px, ${spot.box.top - pad}px)`,
+        width: `${spot.box.width + pad * 2}px`,
+        height: `${spot.box.height + pad * 2}px`,
+      });
+    }
+    highlight.classList.toggle('on', Boolean(spot.box));
+    pointing.frame = requestAnimationFrame(followTarget);
+  }
+
+  function moveCursor(x, y) {
+    cursor.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
+  }
+
+  function hidePointer(now = false) {
+    if (now) pointerHost.remove();
+    if (!pointing) return;
+    cancelAnimationFrame(pointing.frame);
+    pointing = null;
+    layer.classList.remove('show');
+    highlight.classList.remove('on');
+    if (now) return;
+    setTimeout(() => {
+      if (!pointing) pointerHost.remove();
+    }, 300);
+  }
+
+  function isOffscreen(spot) {
+    const {height} = viewport();
+    const box = spot?.box || {top: spot?.y ?? 0, bottom: spot?.y ?? 0};
+    return box.bottom < 0 || box.top > height;
+  }
+
+  /** Lowercases and folds whitespace, quotes, and dashes for matching. */
+  function foldChar(ch) {
+    if (/\s/.test(ch)) return ' ';
+    if (/[‘’‚′]/.test(ch)) return "'";
+    if (/[“”„″]/.test(ch)) return '"';
+    if (/[‐-―−]/.test(ch)) return '-';
+    return ch.toLowerCase();
+  }
+
+  function fold(text) {
+    return Array.from(text, foldChar).join('').replace(/ +/g, ' ').trim();
+  }
+
+  /**
+   * Finds `query` in the page's visible text (across element boundaries), or
+   * in labels without visible text (aria-label, alt, placeholder, title).
+   * @return {?{target: function(): ?Object, scrollTo: !Element}}
+   */
+  function findOnPage(query) {
+    const needle = fold(query);
+    if (needle.length < 2) return null;
+    const attempts = [needle];
+    // Models paraphrase long quotes: fall back to their start and end.
+    const words = needle.split(' ');
+    if (words.length > 6) attempts.push(words.slice(0, 5).join(' '), words.slice(-5).join(' '));
+    const index = indexPageText();
+    for (const attempt of attempts) {
+      const range = findInIndex(index, attempt);
+      if (range) {
+        return {target: rangeTarget(range), scrollTo: range.startContainer.parentElement};
+      }
+    }
+    for (const attempt of attempts) {
+      const labelled = findLabelled(attempt);
+      if (labelled) return {target: elementTarget(labelled), scrollTo: labelled};
+    }
+    return null;
+  }
+
+  /** The page's folded text, with each character's text node and offset. */
+  function indexPageText() {
+    let text = '';
+    const nodes = [];
+    const offsets = [];
+    const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const parent = node.parentElement;
+        if (!parent || /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE|TEXTAREA)$/.test(parent.tagName)) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return node.data.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+      },
+    });
+    for (let node = walker.nextNode(); node && text.length < MAX_SCAN_CHARS; node = walker.nextNode()) {
+      // Separate nodes with a space, as words in different elements are.
+      if (text && !text.endsWith(' ')) {
+        text += ' ';
+        nodes.push(null);
+        offsets.push(0);
+      }
+      const data = node.data;
+      for (let i = 0; i < data.length; i++) {
+        const ch = foldChar(data[i]);
+        if (ch === ' ' && (!text || text.endsWith(' '))) continue;
+        text += ch;
+        nodes.push(node);
+        offsets.push(i);
+      }
+    }
+    return {text, nodes, offsets};
+  }
+
+  /** @return {?Range} The best visible match: on screen first, then first. */
+  function findInIndex({text, nodes, offsets}, needle) {
+    const {height} = viewport();
+    let fallback = null;
+    for (let at = text.indexOf(needle), tries = 0; at !== -1 && tries < 50; at = text.indexOf(needle, at + 1), tries++) {
+      let first = at;
+      let last = at + needle.length - 1;
+      while (first <= last && !nodes[first]) first++;
+      while (last >= first && !nodes[last]) last--;
+      if (first > last) continue;
+      const range = document.createRange();
+      range.setStart(nodes[first], offsets[first]);
+      range.setEnd(nodes[last], offsets[last] + 1);
+      const rect = range.getBoundingClientRect();
+      if (!rect.width && !rect.height) continue; // Hidden.
+      if (rect.bottom > 0 && rect.top < height) return range;
+      fallback ??= range;
+    }
+    return fallback;
+  }
+
+  function findLabelled(needle) {
+    const selector = '[aria-label], img[alt], [placeholder], [title]';
+    let fallback = null;
+    const {height} = viewport();
+    for (const el of document.querySelectorAll(selector)) {
+      if (el === host || el === pointerHost) continue;
+      const label = el.getAttribute('aria-label') || el.getAttribute('alt') ||
+        el.getAttribute('placeholder') || el.getAttribute('title') || '';
+      if (!fold(label).includes(needle)) continue;
+      const rect = el.getBoundingClientRect();
+      if (!rect.width && !rect.height) continue;
+      if (rect.bottom > 0 && rect.top < height) return el;
+      fallback ??= el;
+    }
+    return fallback;
+  }
+
+  /** Points just below the middle of the text's first line, boxing it all. */
+  function rangeTarget(range) {
+    return () => {
+      if (!range.startContainer.isConnected) return null;
+      const box = range.getBoundingClientRect();
+      const line = range.getClientRects()[0] || box;
+      return {x: line.left + Math.min(line.width / 2, 60), y: line.bottom - 2, box};
+    };
+  }
+
+  function elementTarget(el) {
+    return () => {
+      if (!el.isConnected) return null;
+      const box = el.getBoundingClientRect();
+      return {x: box.left + box.width / 2, y: box.top + box.height / 2, box};
+    };
+  }
+
+  /**
+   * A spot in the latest screenshot (0..1000 on each axis of the visible
+   * tab), pinned to the element under it so the pointer follows scrolling.
+   */
+  function targetAtScreenshotPoint(x, y) {
+    const clamp = (v) => Math.min(1000, Math.max(0, v)) / 1000;
+    const px = clamp(x) * innerWidth;
+    const py = clamp(y) * innerHeight;
+    const el = document.elementFromPoint(px, py);
+    if (!el || el === host || el === document.documentElement || el === document.body) {
+      return () => ({x: px, y: py, box: null});
+    }
+    const start = el.getBoundingClientRect();
+    const fx = start.width ? (px - start.left) / start.width : 0.5;
+    const fy = start.height ? (py - start.top) / start.height : 0.5;
+    return () => {
+      if (!el.isConnected) return null;
+      const box = el.getBoundingClientRect();
+      return {x: box.left + fx * box.width, y: box.top + fy * box.height, box: null};
+    };
+  }
 
   // ── Reading the page ─────────────────────────────────────────────────────
 
@@ -665,6 +1032,7 @@
     clearTimeout(captionTimer);
     clearTimeout(selectionTimer);
     observer.disconnect();
+    hidePointer(true);
     for (const [target, type, listener, options] of listeners) {
       target.removeEventListener(type, listener, options);
     }

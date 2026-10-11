@@ -11,6 +11,8 @@ voice.
     click it on the companion's tab (or ✕) to send it away.
 *   It knows the page: its title, URL, and text; what you highlight; and what
     you see (screenshots of the visible tab when the page changes).
+*   It points: when it talks about something on the page, a cursor flies from
+    the bubble to it and highlights it (scrolling it into view if needed).
 *   Optionally, it keeps long-term memories in a Google Drive folder you give
     it: it reads them at the start of each conversation and saves new ones.
 
@@ -117,6 +119,14 @@ saving).
     which the model absorbs without replying. Screenshots (downscaled to
     1280 px wide, at most every 3 s and only after the page changed) go in as
     `realtimeInput.video` frames, which also don't trigger replies.
+*   **Pointing**: every session has a `point_at` function tool. The model
+    passes words copied from the page (or, for things without text, an x/y
+    spot in the latest screenshot on a 0–1000 scale). The bubble finds the
+    first visible match in the page text (across element boundaries, then in
+    `aria-label`/`alt`/`placeholder`/`title`), draws the cursor in its own
+    closed shadow root, and follows the target as the page scrolls for 7 s.
+    A miss goes back to the model as an error, so it can retry with other
+    words.
 *   **Session limits**: the session asks for `sessionResumption`; on `goAway`
     or a dropped connection it resumes on a new connection, keeping the
     conversation.
